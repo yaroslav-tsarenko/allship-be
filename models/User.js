@@ -1,0 +1,47 @@
+const mongoose = require("mongoose");
+
+const UserSchema = new mongoose.Schema({
+    name: {type: String, required: true},
+    secondName: {type: String, required: true},
+    email: {type: String, required: true},
+    password: {type: String, required: true},
+    avatar: {type: String},
+    card: {type: String},
+    phone: {type: String},
+    carrierId: {type: String},
+    notifications: {
+        notificationsEnabled: {type: Boolean, default: false},
+        aiNotifications: {type: Boolean, default: false},
+        carrierNotifications: {type: Boolean, default: false},
+        loadNotifications: {type: Boolean, default: false},
+        driverNotifications: {type: Boolean, default: false},
+        updateNotifications: {type: Boolean, default: false},
+    },
+    role: {type: String, enum: ['customer', 'carrier', 'driver', 'admin'], default: 'customer'},
+    truck: {type: String},
+    drivingCategory: {type: String, enum: ['', 'C', 'СЕ ', 'C1', 'C1E'], default: ''},
+    assignedLoads: [String],
+    insurance: {type: Boolean},
+    insuranceExpires: {type: Date},
+    addedByCarrier: {type: String},
+    dot: {type: String},
+    usDot: {type: String},
+    serviceRating: {type: Number, default: 0},
+    serviceAgreement: {type: Number, default: 0},
+    serviceActivity: {type: Number, default: 0},
+    company: {type: String},
+    address: {type: String},
+    city: {type: String},
+    state: {type: String},
+    lat: {type: Number, default: 0 },
+    lng: {type: Number, default: 0},
+    currentLocation: {type: String},
+    currentLocationTime: {type: Date},
+    verificationCode: {type: String},
+    verificationCodeExpires: {type: Date},
+    verificated: {type: Boolean},
+    createdAt: {type: Date, default: Date.now},
+});
+
+const UserModel = mongoose.model("users", UserSchema);
+module.exports = UserModel;
