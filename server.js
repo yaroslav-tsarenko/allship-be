@@ -15,16 +15,16 @@ const chatRoutes = require('./routes/chat.route');
 const app = express();
 const server = http.createServer(app);
 const port = 8080;
-const allowedOrigins = ['http://localhost:3000', 'https://www.allship.ai', 'https://www.allship.ai', "https://dashboard.allship.ai", "dashboard.allship.ai"  ];
 const fileUpload = require("express-fileupload");
 const path = require("path");
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
 app.use(express.json());
 app.use(bodyParser.json());
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: true,
   credentials: true,
 }));
 app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
@@ -90,5 +90,4 @@ app.use('/chat', chatRoutes);
 
 server.listen(port, () => {
   console.log(`Server running on port ${port}✅ `);
-  console.log(`Server's Frontend origins: ${allowedOrigins.join(', ')}✅ `);
 });
