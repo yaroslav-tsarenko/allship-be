@@ -5,6 +5,7 @@ require('dotenv').config();
 const Chat = require('./models/Chat');
 const WebSocket = require('ws');
 const helmet = require('helmet');
+const cors = require('cors');
 const bodyParser = require('body-parser');
 const authRoutes = require('./routes/auth.route');
 const userRoutes = require('./routes/user.route');
@@ -16,7 +17,6 @@ const server = http.createServer(app);
 const port = 8080;
 const fileUpload = require("express-fileupload");
 const path = require("path");
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
@@ -25,6 +25,24 @@ app.use(bodyParser.json());
 app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
 
 app.use(helmet());
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://allship.ai",
+  "https://www.allship.ai",
+  "https://dashboard.allship.ai",
+  "https://www.dashboard.allship.ai"
+];
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+}));
 
 /*const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
