@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
-const cors = require('cors');
 require('dotenv').config();
 const Chat = require('./models/Chat');
 const WebSocket = require('ws');
@@ -23,10 +22,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(cors({
-  origin: true,
-  credentials: true,
-}));
 app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
 
 app.use(helmet());

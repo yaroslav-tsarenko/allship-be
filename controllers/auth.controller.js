@@ -57,7 +57,7 @@ const login = async (req, res) => {
             return res.status(400).json({ error: 'User not found' });
         }
 
-        res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production' });
+        res.cookie('token', token, { httpOnly: false, secure: process.env.NODE_ENV === 'production' });
         res.status(201).json({ message: 'User logged in successfully' });
     } catch (error) {
         console.error('Error during login:', error);
