@@ -15,7 +15,7 @@ const chatRoutes = require('./routes/chat.route');
 const app = express();
 const server = http.createServer(app);
 const port = 8080;
-const allowedOrigins = ['http://localhost:3000'];
+const allowedOrigins = ['http://localhost:3000', 'https://www.allship.ai', 'https://www.allship.ai', "https://dashboard.allship.ai", "dashboard.allship.ai"  ];
 const fileUpload = require("express-fileupload");
 const path = require("path");
 app.use(express.json());
@@ -45,6 +45,10 @@ mongoose.connect("mongodb+srv://yaroslavtsarenko:qlKClTLv1d7rUCOR@allshipai-db.z
 }).then(() => {
   console.log('MongoDB connected✅ ');
 }).catch(err => console.log(err));
+
+app.get('/', (req, res) => {
+  res.send('Server is live!');
+});
 
 wss.on('connection', (ws) => {
   ws.on('message', async (message) => {
