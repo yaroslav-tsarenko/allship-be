@@ -66,7 +66,9 @@ const login = async (req, res) => {
             return res.status(400).json({ error: 'User not found' });
         }
 
-        res.status(201).json({ message: 'User logged in successfully', token});
+        const isSecure = req.protocol === 'https';
+        res.cookie('token', token, { httpOnly: true, secure: isSecure });
+        res.status(201).json({ message: 'User logged in successfully', token });
     } catch (error) {
         console.error('Error during login:', error);
         res.status(500).send('Server error');
