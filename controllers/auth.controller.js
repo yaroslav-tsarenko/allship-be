@@ -46,6 +46,7 @@ const login = async (req, res) => {
     try {
         const { email, password } = req.body;
         console.log('User logging in:', req.body);
+
         const user = await User.findOne({ email });
 
         if (!user) {
@@ -59,19 +60,21 @@ const login = async (req, res) => {
         }
 
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '7d' });
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const currentUser = await User.findById(decoded.userId);
 
-        if (!currentUser) {
-            return res.status(400).json({ error: 'User not found' });
-        }
-
-        const isSecure = req.protocol === 'https';
+        const isHttps = req.protocol === 'https' || req.get('origin')?.includes('https');
         const origin = req.get('origin');
 
-        if (origin === 'https://dashboard.allship.ai' || origin === 'https://allship.ai') {
-            res.cookie('token', token, { httpOnly: true, secure: isSecure });
+        let cookieOptions = {
+            httpOnly: true, // Защищает от XSS атак
+            sameSite: 'None', // Разрешает работу на разных доменах
+            secure: isHttps, // Куки работают по HTTPS
+        };
+
+        if (origin?.includes('allship.ai')) {
+            cookieOptions.domain = '.allship.ai';
         }
+
+        res.cookie('token', token, cookieOptions);
 
         res.status(201).json({ message: 'User logged in successfully', token });
     } catch (error) {
@@ -79,6 +82,7 @@ const login = async (req, res) => {
         res.status(500).send('Server error');
     }
 };
+
 
 
 const logout = (req, res) => {

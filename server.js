@@ -12,6 +12,7 @@ const userRoutes = require('./routes/user.route');
 const aiRoutes = require('./routes/ai.route');
 const loadRoutes = require('./routes/load.route');
 const chatRoutes = require('./routes/chat.route');
+const cookieParser = require('cookie-parser');
 const app = express();
 const server = http.createServer(app);
 const port = 8080;
@@ -26,6 +27,8 @@ app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatar
 
 app.use(helmet());
 
+app.use(cookieParser());
+
 const allowedOrigins = [
   "http://localhost:3000",
   "https://allship.ai",
@@ -33,15 +36,10 @@ const allowedOrigins = [
   "https://dashboard.allship.ai",
   "https://www.dashboard.allship.ai"
 ];
+
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
+  origin: allowedOrigins,
+  credentials: true, // Разрешаем куки
 }));
 
 /*const limiter = rateLimit({
