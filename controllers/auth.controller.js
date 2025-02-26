@@ -67,7 +67,12 @@ const login = async (req, res) => {
         }
 
         const isSecure = req.protocol === 'https';
-        res.cookie('token', token, { httpOnly: true, secure: isSecure });
+        const origin = req.get('origin');
+
+        if (origin === 'https://dashboard.allship.ai' || origin === 'https://allship.ai') {
+            res.cookie('token', token, { httpOnly: true, secure: isSecure });
+        }
+
         res.status(201).json({ message: 'User logged in successfully', token });
     } catch (error) {
         console.error('Error during login:', error);
