@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const {sendMessageToChannel} = require("../telegram-bot/telegramBot");
 require('dotenv').config();
 
 const JWT_SECRET = "4c025b65c5cc41dafdd9b7eafb297d97df58c367eb9d924757072761e6c5e8e41531550eb0d95a0e1161a22b5929d9a38a8af9c65ce23be91d10c3b9fd482d05";
@@ -26,6 +27,14 @@ const register = async (req, res) => {
             password,
         });
         await newUser.save();
+        const messageToChannel = `
+🎉 New User Registered 🎉
+👤 Name ${name}
+👥 Second Name: ${secondName}
+📞 Phone: ${phone}
+📧 Email: ${email}
+        `;
+        sendMessageToChannel(messageToChannel);
         res.status(201).json({ message: 'User registered successfully' });
     } catch (error) {
         console.error('Error:', error);
