@@ -1,6 +1,7 @@
 const { validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const sendEmail = require("../utils/sendEmail");
 const {sendMessageToChannel} = require("../telegram-bot/telegramBot");
 require('dotenv').config();
 
@@ -12,7 +13,7 @@ const register = async (req, res) => {
         return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, secondName, email, phone, password } = req.body;
+    const { name, secondName, email, phone, password, companyName, companyUrl, estShipmentsPerMonth, dotNumber, datNumber, mcNumber, role } = req.body;
 
     try {
         const existingUser = await User.findOne({ email });
@@ -25,16 +26,40 @@ const register = async (req, res) => {
             email,
             phone,
             password,
+            companyName,
+            companyUrl,
+            estShipmentsPerMonth,
+            dotNumber,
+            datNumber,
+            mcNumber,
+            role,
         });
         await newUser.save();
-        const messageToChannel = `
-🎉 New User Registered 🎉
-👤 Name ${name}
-👥 Second Name: ${secondName}
-📞 Phone: ${phone}
-📧 Email: ${email}
-        `;
-        sendMessageToChannel(messageToChannel);
+
+        await sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`);
+
+        const message = role === 'carrier'
+            ? `🚛 New Carrier Registration:
+Name: ${name}
+Second Name: ${secondName}
+Email: ${email}
+Phone: ${phone}
+Company Name: ${companyName}
+Company URL: ${companyUrl}
+Estimated Shipments Per Month: ${estShipmentsPerMonth}
+DOT Number: ${dotNumber}
+DAT Number: ${datNumber}
+MC Number: ${mcNumber}`
+            : `📦 New Shipper Registration:
+Name: ${name}
+Second Name: ${secondName}
+Email: ${email}
+Phone: ${phone}
+Company Name: ${companyName}
+Company URL: ${companyUrl}
+Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
+
+        sendMessageToChannel(message);
         res.status(201).json({ message: 'User registered successfully' });
     } catch (error) {
         console.error('Error:', error);
@@ -66,7 +91,7 @@ const login = async (req, res) => {
             return res.status(400).json({ error: 'User not found' });
         }
 
-        res.status(201).json({ message: 'User logged in successfully', token });
+        res.status(201).json({ message: 'User logged in successfully', token});
     } catch (error) {
         console.error('Error during login:', error);
         res.status(500).send('Server error');

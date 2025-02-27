@@ -33,6 +33,7 @@ const allowedOrigins = [
   "https://dashboard.allship.ai",
   "https://www.dashboard.allship.ai"
 ];
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
