@@ -6,6 +6,7 @@ const sendEmail = require('../utils/sendEmail');
 const createMollieClient = require('@mollie/api-client').default;
 const mollie = createMollieClient({ apiKey: "test_T2NbH38hTvDDPASvnQ9aRqdWeWrT5B" });
 const { sendMessageToChannel } = require('../telegram-bot/telegramBot');
+const {uploadImage} = require("../utils/uploadImage");
 
 const generateLoadId = async () => {
     const prefix = '49-0013';
@@ -31,7 +32,7 @@ const createLoad = async (req, res) => {
         const user = await User.findById(userId);
         if (!user) {
             console.log('User not found for ID:', userId);
-            return res.status(404).json({message: 'User not found'});
+            return res.status(404).json({ message: 'User not found' });
         }
         const loadData = req.body;
         loadData.userId = user._id;
@@ -44,11 +45,41 @@ const createLoad = async (req, res) => {
             }
         });
 
+        const files = req.files?.files || [];
+        const photos = req.files?.photos || [];
+        const imageUrls = [];
+
+        const uploadFiles = async (fileArray, type) => {
+            for (let i = 0; i < fileArray.length; i++) {
+                const fileName = `load-${loadData.loadId}-${type}-${i + 1}`;
+                const imageUrl = await uploadImage(fileArray[i], fileName);
+                imageUrls.push(imageUrl);
+            }
+        };
+
+        await uploadFiles(files, 'file');
+        await uploadFiles(photos, 'photo');
+
+        loadData.images = imageUrls;
+
         const newLoad = new Load(loadData);
         await newLoad.save();
         sendEmail(loadData.email, 'Congratulations🎉', `Your new ${loadSubType} load with ID ${loadData.loadId} has been created successfully`);
         res.status(201).json(newLoad);
-
+        const publicLink = `https://www.allship.ai/load/${loadData.loadId}`;
+        const messageToChannel = `
+    🚨 NEW LOAD POST 🚨
+    📧 User Email: ${loadData.email}
+    🆔 Load ID: ${loadData.loadId}
+    🛠️ SubType: ${loadData.subType}
+    🏷️ Title: ${loadData.title}
+    📊 Status: ${loadData.status}
+    📍 Pickup Location: ${loadData.pickupLocation}
+    📦 Delivery Location: ${loadData.deliveryLocation}
+    📝 Description: ${loadData.description}
+    🔗 Public Load Link: ${publicLink}
+`;
+        sendMessageToChannel(messageToChannel);
         const randomDelay = Math.floor(Math.random() * (5 - 1 + 1) + 1) * 60 * 1000;
         setTimeout(async () => {
             try {
@@ -61,7 +92,7 @@ const createLoad = async (req, res) => {
         }, randomDelay);
     } catch (error) {
         console.error('Error creating load:', error);
-        res.status(500).json({message: 'Error creating load', error});
+        res.status(500).json({ message: 'Error creating load', error });
     }
 };
 
@@ -100,10 +131,10 @@ const makeBid = async (req, res) => {
             estimatedDeliveryTime
         } = req.body;
         const load = await Load.findOne({loadId});
-        const shipperEmail = load.email;
         if (!load) {
             return res.status(404).json({message: 'Load not found'});
         }
+        const shipperEmail = load.email;
 
         const newBid = {
             carrierId,
@@ -121,6 +152,17 @@ const makeBid = async (req, res) => {
         load.avgPrice = load.bids.reduce((acc, bid) => acc + parseFloat(bid.bidPrice), 0) / load.bids.length;
         await sendEmail(shipperEmail, 'New bid on your load🚚', `Carrier ${carrierCompanyName} made a bid on your load with ID ${loadId}, maybe it's your destiny`);
         await load.save();
+
+        const messageToChannel = `
+📢NEW BID FOR LOAD📢
+🆔Load ID: ${loadId}
+🏢Carrier Company: ${carrierCompanyName}
+💵Bid Price: ${bidPrice}$
+📅Estimated Delivery Time: ${estimatedDeliveryTime}
+📝Letter: ${letter}
+        `;
+        sendMessageToChannel(messageToChannel);
+
         res.status(200).json(load);
     } catch (error) {
         console.error('Error adding bid to load:', error);

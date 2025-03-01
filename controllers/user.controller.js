@@ -7,6 +7,7 @@ const HelpQuote = require('../models/HelpQuote');
 const path = require("path");
 const fs = require("fs");
 const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
+const {uploadImage} = require("../utils/uploadImage");
 const generatePassword = () => {
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()';
     let password = '';
@@ -215,32 +216,30 @@ const getSelectedCard = async (req, res) => {
 
 const updateUser = async (req, res) => {
     try {
-        const {userId} = req.body;
+        const { userId } = req.body;
         const updates = req.body;
 
         if (!userId) {
-            return res.status(400).json({message: "User ID is required"});
+            return res.status(400).json({ message: "User ID is required" });
         }
 
         if (req.files && req.files.avatar) {
             const avatar = req.files.avatar;
-            const avatarName = `${userId}-${Date.now()}-${avatar.name}`;
-            const avatarPath = path.join(__dirname, "..", "images", "avatars", avatarName);
-
-            await avatar.mv(avatarPath);
-            updates.avatar = `/images/avatars/${avatarName}`;
+            const avatarName = `avatar-${userId}-${Date.now()}`;
+            const avatarUrl = await uploadImage(avatar, avatarName);
+            updates.avatar = avatarUrl;
         }
 
-        const user = await User.findByIdAndUpdate(userId, updates, {new: true});
+        const user = await User.findByIdAndUpdate(userId, updates, { new: true });
 
         if (!user) {
-            return res.status(404).json({message: "User not found"});
+            return res.status(404).json({ message: "User not found" });
         }
 
-        res.status(200).json({message: "User updated successfully", user});
+        res.status(200).json({ message: "User updated successfully", user });
     } catch (error) {
         console.error("Error updating user:", error);
-        res.status(500).json({message: "Error updating user", error});
+        res.status(500).json({ message: "Error updating user", error });
     }
 };
 

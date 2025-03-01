@@ -39,25 +39,25 @@ const register = async (req, res) => {
         await sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`);
 
         const message = role === 'carrier'
-            ? `🚛 New Carrier Registration:
-Name: ${name}
-Second Name: ${secondName}
-Email: ${email}
-Phone: ${phone}
-Company Name: ${companyName}
-Company URL: ${companyUrl}
-Estimated Shipments Per Month: ${estShipmentsPerMonth}
-DOT Number: ${dotNumber}
-DAT Number: ${datNumber}
-MC Number: ${mcNumber}`
-            : `📦 New Shipper Registration:
-Name: ${name}
-Second Name: ${secondName}
-Email: ${email}
-Phone: ${phone}
-Company Name: ${companyName}
-Company URL: ${companyUrl}
-Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
+            ? `🚛 NEW CARRIER 🚛:
+👤 Name: ${name}
+👥 Second Name: ${secondName}
+📧 Email: ${email}
+📞 Phone: ${phone}
+🏢 Company Name: ${companyName}
+🌐 Company URL: ${companyUrl}
+📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}
+🚚 DOT Number: ${dotNumber}
+📊 DAT Number: ${datNumber}
+🆔 MC Number: ${mcNumber}`
+            : `📦 NEW SHIPPER 📦:
+👤 Name: ${name}
+👥 Second Name: ${secondName}
+📧 Email: ${email}
+📞 Phone: ${phone}
+🏢 Company Name: ${companyName}
+🌐 Company URL: ${companyUrl}
+📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
 
         sendMessageToChannel(message);
         res.status(201).json({ message: 'User registered successfully' });
