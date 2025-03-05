@@ -1,7 +1,7 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
-require('dotenv').config();
 const Chat = require('./models/Chat');
 const WebSocket = require('ws');
 const helmet = require('helmet');
@@ -14,7 +14,7 @@ const loadRoutes = require('./routes/load.route');
 const chatRoutes = require('./routes/chat.route');
 const app = express();
 const server = http.createServer(app);
-const port = 8080;
+const port = process.env.PORT || 5000;
 const fileUpload = require("express-fileupload");
 const path = require("path");
 app.use(express.json());
@@ -45,12 +45,14 @@ app.use(cors({
   credentials: true,
 }));
 
+
 /*const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 1000,
 });
 
 app.use(limiter);*/
+
 const wss = new WebSocket.Server({ server });
 
 mongoose.connect("mongodb+srv://yaroslavtsarenko:qlKClTLv1d7rUCOR@allshipai-db.zrjqe.mongodb.net/?retryWrites=true&w=majority&appName=allshipai-db", {

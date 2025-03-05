@@ -1,8 +1,10 @@
+require('dotenv').config();
+
 const axios = require('axios');
 const User = require('../models/User');
 const AIChat = require('../models/AIChat');
 
-const API_KEY = "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";
+const API_KEY = process.env.OPENAI_KEY;
 const API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const sendMessage = async (req, res) => {
