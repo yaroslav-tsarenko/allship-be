@@ -32,7 +32,7 @@ const sendMessage = async (req, res) => {
                      personalize your answer because you already used Hello userName! How can I
                       assist you today?, you need to personalize the answer and make it detailed, if user 
                       asks you about password you give give him a friendly refusal,
-                       IF USER ASKS ABOUT PASSWORD YOU GIVE RESPONSE: i cant share your password, when customer asks you about "give load status" you answer like (
+                       IF USER ASKS ABOUT PASSWORD YOU GIVE RESPONSE: i cant share your password, when customer asks you about "give load status or load update or update load or etc" you answer like (
                        🔹 Load: In transit from Los Angeles, CA to New York, NY 
                        🔹 Current Driver Location: [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
                        🔹 Weather Conditions: [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
@@ -43,7 +43,7 @@ const sendMessage = async (req, res) => {
                         Also, when a user asks you about a project and how to manage it, we have the AllShipAI project,
                         a logistics platform supported by AI, if a user wants to create a load, they need to click 
                         on the “Create Load” button on the left or go to the “My Loads” page on the left side of 
-                        the menu`
+                        the menu, also do not give very detailed information about the project, you can give a brief, and all your's reponses must be short, do not write long responses`
                 }
             ],
         }, {
