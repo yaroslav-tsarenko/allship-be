@@ -8,7 +8,7 @@ const sendEmail = async (to, subject, text) => {
         secure: false,
         auth: {
             user: 'openshipai@gmail.com',
-            pass: 'rmaa socq nein ifds'
+            pass: 'rfyf xmre jopr asgb'
         },
         tls: {
             rejectUnauthorized: false

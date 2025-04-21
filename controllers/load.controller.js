@@ -66,20 +66,38 @@ const createLoad = async (req, res) => {
         await newLoad.save();
         sendEmail(loadData.email, 'Congratulations🎉', `Your new ${loadSubType} load with ID ${loadData.loadId} has been created successfully`);
         res.status(201).json(newLoad);
+
         const publicLink = `https://www.allship.ai/load/${loadData.loadId}`;
-        const messageToChannel = `
-    🚨 NEW LOAD POST 🚨
-    📧 User Email: ${loadData.email}
-    🆔 Load ID: ${loadData.loadId}
-    🛠️ SubType: ${loadData.subType}
-    🏷️ Title: ${loadData.title}
-    📊 Status: ${loadData.status}
-    📍 Pickup Location: ${loadData.pickupLocation}
-    📦 Delivery Location: ${loadData.deliveryLocation}
-    📝 Description: ${loadData.description}
-    🔗 Public Load Link: ${publicLink}
+        let messageToChannel;
+
+        if (loadSubType === 'Rent Truck') {
+            messageToChannel = `
+🚨 NEW REQUEST FOR RENT TRUCK 🚨
+📧 Contact Email: ${user.email}
+📞 Contact Phone: ${user.phone}
+📝 Description: ${loadData.description}
+🆔 Order ID: ${loadData.loadId}
+📍 Pickup Location: ${loadData.pickupLocation}
+📦 Delivery Location: ${loadData.deliveryLocation}
+🔗 Public Load Link: ${publicLink}
 `;
+        } else {
+            messageToChannel = `
+🚨 NEW LOAD POST 🚨
+📧 User Email: ${loadData.email}
+🆔 Load ID: ${loadData.loadId}
+🛠️ SubType: ${loadData.subType}
+🏷️ Title: ${loadData.title}
+📊 Status: ${loadData.status}
+📍 Pickup Location: ${loadData.pickupLocation}
+📦 Delivery Location: ${loadData.deliveryLocation}
+📝 Description: ${loadData.description}
+🔗 Public Load Link: ${publicLink}
+`;
+        }
+
         sendMessageToChannel(messageToChannel);
+
         const randomDelay = Math.floor(Math.random() * (5 - 1 + 1) + 1) * 60 * 1000;
         setTimeout(async () => {
             try {

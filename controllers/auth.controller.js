@@ -145,8 +145,9 @@ const registerAndAuth = async (req, res) => {
 🌐 Company URL: ${companyUrl}
 📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
         sendMessageToChannel(message);
+        const userId = newUser._id;
         const token = jwt.sign({userId: newUser._id}, JWT_SECRET, {expiresIn: '7d'});
-        res.status(201).json({message: 'User registered successfully', token});
+        res.status(201).json({message: 'User registered successfully', token, userId});
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({message: 'Server error', error});
