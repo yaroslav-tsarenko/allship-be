@@ -6,6 +6,7 @@ const TransactionModel = require('../models/Transaction');
 const HelpQuote = require('../models/HelpQuote');
 const path = require("path");
 const fs = require("fs");
+const { createZohoLead } = require('../utils/addToZoho');
 const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
 const {uploadImage} = require("../utils/uploadImage");
 const generatePassword = () => {
@@ -353,22 +354,35 @@ const sendUserEmail = async (req, res) => {
 };
 
 
-const contactUsRequest = (req, res) => {
-    const {name, email, message} = req.body;
+const contactUsRequest = async (req, res) => {
+    const { name, email, message } = req.body;
 
     try {
+        await createZohoLead({
+            lastName: name || 'Anonymous',
+            email,
+            company: 'AllShip Contact Form',
+            phone: '',
+            message,
+        });
+
         const messageToChannel = `
 ⚠️ Contact Form Request:
 👤 Name: ${name}
 📧 Contact: ${email}
-💬 Message: ${message}`
-
+💬 Message: ${message}`;
         sendMessageToChannel(messageToChannel);
-        sendEmail(email, "Thanks for contact us!", "You will receive notification when your request will be reviewed.");
-        res.status(200).json({message: 'Email sent successfully'});
+
+        sendEmail(
+            email,
+            "Thanks for contacting us!",
+            "You will receive a notification when your request is reviewed."
+        );
+
+        res.status(200).json({ message: 'Lead saved & email sent successfully' });
     } catch (error) {
-        console.error('Error sending email:', error);
-        res.status(500).json({message: 'Failed to send email'});
+        console.error('Error processing contact request:', error);
+        res.status(500).json({ message: 'Failed to handle request' });
     }
 };
 

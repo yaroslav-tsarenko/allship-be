@@ -10,14 +10,19 @@ const API_URL = 'https://api.openai.com/v1/chat/completions';
 const sendMessage = async (req, res) => {
     const { messages, email, aiChatId } = req.body;
     try {
+        console.log("Request Body: ", req.body);
+
         const user = await User.findOne({ email });
         if (!user) {
+            console.error("User not found for email: ", email);
             return res.status(404).send('User not found');
         }
+
         const userInfo = JSON.stringify(user);
         console.log("User Info: ", userInfo);
+
         const response = await axios.post(API_URL, {
-            model: 'gpt-3.5-turbo',
+            model: 'gpt-4',
             messages: [
                 ...messages,
                 {
@@ -53,20 +58,25 @@ const sendMessage = async (req, res) => {
             }
         });
 
+        console.log("GPT-4 Response: ", response.data);
+
         const botReply = response.data.choices[0].message;
 
         if (aiChatId) {
             const chat = await AIChat.findById(aiChatId);
             if (chat) {
+                console.log("Found AI Chat: ", chat);
                 chat.messages.push({ sender: 'user', text: messages[messages.length - 1].content });
                 chat.messages.push({ sender: 'bot', text: botReply.content });
                 await chat.save();
+                console.log("Updated AI Chat: ", chat);
             }
         }
 
         res.json({ message: botReply });
     } catch (error) {
         console.error('Error fetching response:', error);
+        console.error('Stack Trace: ', error.stack);
         res.status(500).send('Error fetching response');
     }
 };

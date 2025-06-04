@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const sendEmail = require("../utils/sendEmail");
 const {sendMessageToChannel} = require("../telegram-bot/telegramBot");
+const {createZohoLead} = require("../utils/addToZoho");
 require('dotenv').config();
 
 const JWT_SECRET = "4c025b65c5cc41dafdd9b7eafb297d97df58c367eb9d924757072761e6c5e8e41531550eb0d95a0e1161a22b5929d9a38a8af9c65ce23be91d10c3b9fd482d05";
@@ -73,6 +74,14 @@ const register = async (req, res) => {
 📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
 
         sendMessageToChannel(message);
+        await createZohoLead({
+            firstName: name,
+            lastName: secondName,
+            email,
+            company: companyName,
+            phone,
+            message: `New user registered with role: ${role}`,
+        });
         res.status(201).json({message: 'User registered successfully'});
     } catch (error) {
         console.error('Error:', error);
@@ -148,6 +157,15 @@ const registerAndAuth = async (req, res) => {
         const userId = newUser._id;
         const token = jwt.sign({userId: newUser._id}, JWT_SECRET, {expiresIn: '7d'});
         res.status(201).json({message: 'User registered successfully', token, userId});
+
+        await createZohoLead({
+            firstName: name,
+            lastName: secondName,
+            email,
+            company: companyName,
+            phone,
+            message: `New user registered with role: ${role}`,
+        });
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({message: 'Server error', error});
