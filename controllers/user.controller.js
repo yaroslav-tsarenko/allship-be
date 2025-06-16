@@ -386,9 +386,67 @@ const contactUsRequest = async (req, res) => {
     }
 };
 
+const submitMovingQuote = async (req, res) => {
+    const {
+        from,
+        to,
+        movingDate,
+        homeSize,
+        name,
+        email,
+        phone,
+        movedBefore,
+        additionalInfo,
+        contactTimes
+    } = req.body;
+
+    try {
+        const message = `
+🚚 New Moving Quote Request:
+🔹 Name: ${name}
+📍 From: ${from} ➡️ To: ${to}
+📅 Date: ${movingDate}
+🏠 Home Size: ${homeSize}
+📞 Phone: ${phone}
+📧 Email: ${email}
+❓ Moved Before: ${movedBefore}
+📝 Additional Info: ${additionalInfo || 'None'}
+⏰ Preferred Contact Times: ${contactTimes.join(', ')}`;
+
+        await sendMessageToChannel(message);
+
+        await sendEmail(email, 'Your Moving Quote Request', `
+Thank you for your quote request, ${name}!
+
+Here’s what we received:
+- From: ${from}
+- To: ${to}
+- Moving Date: ${movingDate}
+- Home Size: ${homeSize}
+- Phone: ${phone}
+- Contact Times: ${contactTimes.join(', ')}
+
+We will reach out to you shortly.`);
+
+        await createZohoLead({
+            lastName: name || 'Anonymous',
+            email,
+            phone,
+            company: 'Moving Quote Request',
+            message: `From: ${from} → ${to}, Home Size: ${homeSize}, Date: ${movingDate}, Info: ${additionalInfo}`,
+        });
+
+        res.status(200).json({ message: 'Quote submitted successfully' });
+    } catch (error) {
+        console.error('Error submitting quote:', error);
+        res.status(500).json({ message: 'Server error while submitting quote', error });
+    }
+};
+
 module.exports = {
     getUser,
     addCard,
+    submitMovingQuote,
     contactUsRequest,
     updatePassword,
     selectCard,

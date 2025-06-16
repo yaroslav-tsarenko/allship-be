@@ -7,8 +7,8 @@ const sendEmail = async (to, subject, text) => {
         port: 587,
         secure: false,
         auth: {
-            user: 'openshipai@gmail.com',
-            pass: 'rfyf xmre jopr asgb'
+            user: 'noreply@allship.ai',
+            pass: 'xttm leas efwo hbhy'
         },
         tls: {
             rejectUnauthorized: false
@@ -17,7 +17,7 @@ const sendEmail = async (to, subject, text) => {
 
 
     const mailOptions = {
-        from: 'openshipai@gmail.com',
+        from: 'noreply@allship.ai',
         to,
         subject,
         text

@@ -78,6 +78,7 @@ const register = async (req, res) => {
             firstName: name,
             lastName: secondName,
             email,
+            source: `Landing Page - ${role}`,
             company: companyName,
             phone,
             message: `New user registered with role: ${role}`,
@@ -166,6 +167,7 @@ const registerAndAuth = async (req, res) => {
             phone,
             message: `New user registered with role: ${role}`,
         });
+
     } catch (error) {
         console.error('Error:', error);
         res.status(500).json({message: 'Server error', error});

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const basicAuth = require('../middleware/basicAuth.mjddleware');
-const { getUser, addDriver, getAllDrivers, sendUserEmail, contactUsRequest, updateNotifications, addCard, createHelpForm, updatePassword, updateUser, getAllTransactions, getSelectedCard, selectCard, getAllCards, updateLocation } = require('../controllers/user.controller');
+const { getUser, addDriver, getAllDrivers, sendUserEmail, contactUsRequest, submitMovingQuote, updateNotifications, addCard, createHelpForm, updatePassword, updateUser, getAllTransactions, getSelectedCard, selectCard, getAllCards, updateLocation } = require('../controllers/user.controller');
 
+router.post('/submit-moving-quote', submitMovingQuote);
 router.get('/get-user', basicAuth, getUser);
 router.post('/add-user-driver', addDriver);
 router.get('/get-all-drivers', getAllDrivers);

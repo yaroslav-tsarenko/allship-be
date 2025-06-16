@@ -27,7 +27,7 @@ async function getAccessToken() {
 
 const ORG_ID = '885744472'; // встав свій
 
-async function createZohoLead({ firstName = '', lastName, email, company, phone, message }) {
+async function createZohoLead({ firstName = '', lastName, email, company, phone, message, source, title }) {
     try {
         const accessToken = await getAccessToken();
 
@@ -40,8 +40,9 @@ async function createZohoLead({ firstName = '', lastName, email, company, phone,
                     Email: email,
                     Company: company || 'AllShip Lead',
                     Phone: phone || '',
-                    Lead_Source: 'Website',
+                    Lead_Source: source || 'Website',
                     Lead_Status: 'Not Contacted',
+                    Job_Title: title,
                     Description: message || 'No message provided',
                     Owner: { id: ZOHO_OWNER_ID },
                     layout: { id: ZOHO_LAYOUT_ID },
