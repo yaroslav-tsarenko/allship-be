@@ -33,7 +33,12 @@ const LoadSchema = new mongoose.Schema({
         createdAt: { type: Date, default: Date.now },
     }],
     milesTrip: { type: Number,  },
-    assignedDriver: { type: String,  },
+    assignedDriver: {
+        driverId: { type: String },
+        lat: { type: Number },
+        lng: { type: Number },
+        avatar: { type: String }
+    },
     vehicleYear: { type: String,  },
     vehicleMake: { type: String,  },
     vehicleModel: { type: String,  },

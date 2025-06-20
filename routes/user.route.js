@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const basicAuth = require('../middleware/basicAuth.mjddleware');
-const { getUser, addDriver, getAllDrivers, sendUserEmail, contactUsRequest, submitMovingQuote, updateNotifications, addCard, createHelpForm, updatePassword, updateUser, getAllTransactions, getSelectedCard, selectCard, getAllCards, updateLocation } = require('../controllers/user.controller');
+const { getUser, addDriver, getAllDrivers, sendUserEmail, addCarrierAdditionalInfo, contactUsRequest, submitMovingQuote, updateNotifications, addCard, createHelpForm, updatePassword, updateUser, getAllTransactions, getSelectedCard, selectCard, getAllCards, updateLocation } = require('../controllers/user.controller');
 
 router.post('/submit-moving-quote', submitMovingQuote);
 router.get('/get-user', basicAuth, getUser);
@@ -19,5 +19,6 @@ router.post('/create-form', createHelpForm);
 router.post('/update-notifications', updateNotifications);
 router.post('/send-email', sendUserEmail);
 router.post('/contact-us-request', contactUsRequest);
+router.post('/add-additional-info', addCarrierAdditionalInfo);
 
 module.exports = router;

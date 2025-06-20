@@ -1,5 +1,27 @@
 const mongoose = require("mongoose");
 
+const MileagePricingSchema = new mongoose.Schema({
+    fromMiles: { type: Number, required: true },
+    toMiles: { type: Number, required: true },
+    price: { type: Number, required: true },
+}, { _id: false });
+
+const ServiceCostsSchema = new mongoose.Schema({
+    packingCost: { type: Number, required: true },
+    unpackingCost: { type: Number, required: true },
+    storageCost: { type: Number, required: true },
+}, { _id: false });
+
+const ReviewSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    secondName: { type: String, required: true },
+    rate: { type: Number, min: 0, max: 5, required: true },
+    text: { type: String, required: true },
+    avatar: { type: String },
+    reviewsCount: { type: Number, default: 0 },
+    role: { type: String, enum: ['customer', 'carrier', 'driver', 'admin'], required: true }
+}, { _id: false });
+
 const UserSchema = new mongoose.Schema({
     name: { type: String, required: true },
     secondName: { type: String, required: true },
@@ -8,6 +30,7 @@ const UserSchema = new mongoose.Schema({
     password: { type: String, required: true },
     companyName: { type: String },
     companyUrl: { type: String },
+    about: { type: String, default: '' },
     estShipmentsPerMonth: { type: Number },
     dotNumber: { type: String },
     datNumber: { type: String },
@@ -43,6 +66,10 @@ const UserSchema = new mongoose.Schema({
     lng: { type: Number, default: 0 },
     currentLocation: { type: String },
     currentLocationTime: { type: Date },
+    carrierEnteredAdditionalInfo: { type: Boolean, default: false },
+    carrierMileagePricing: [MileagePricingSchema],
+    carrierServiceCosts: ServiceCostsSchema,
+    reviews: [ReviewSchema],
     verificationCode: { type: String },
     verificationCodeExpires: { type: Date },
     verificated: { type: Boolean },

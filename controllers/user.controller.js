@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const Load = require('../models/Load');
 const bcrypt = require('bcryptjs');
 const sendEmail = require("../utils/sendEmail");
 const CardModel = require('../models/Card');
@@ -9,6 +10,8 @@ const fs = require("fs");
 const { createZohoLead } = require('../utils/addToZoho');
 const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
 const {uploadImage} = require("../utils/uploadImage");
+const UserModel = require("../models/User");
+const axios = require("axios");
 const generatePassword = () => {
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()';
     let password = '';
@@ -386,6 +389,24 @@ const contactUsRequest = async (req, res) => {
     }
 };
 
+const addCarrierAdditionalInfo = async (req, res) => {
+    const { userId, mileagePricing, serviceCosts } = req.body;
+
+    try {
+        const user = await UserModel.findOne({ _id: userId, role: 'carrier' });
+        if (!user) return res.status(404).json({ message: 'Carrier not found' });
+
+        user.carrierMileagePricing = mileagePricing;
+        user.carrierServiceCosts = serviceCosts;
+        user.carrierEnteredAdditionalInfo = true;
+        await user.save();
+
+        res.status(200).json({ message: 'Additional info added', user });
+    } catch (err) {
+        res.status(500).json({ message: 'Server error', error: err.message });
+    }
+};
+
 const submitMovingQuote = async (req, res) => {
     const {
         from,
@@ -443,12 +464,248 @@ We will reach out to you shortly.`);
     }
 };
 
+const OPENAI_API_KEY = process.env.OPENAI_KEY;
+
+const getUniqueAvatars = (count) => {
+    const avatars = [];
+    const used = new Set();
+    while (avatars.length < count) {
+        const gender = Math.random() > 0.5 ? 'men' : 'women';
+        const num = Math.floor(Math.random() * 99) + 1;
+        const url = `https://randomuser.me/api/portraits/${gender}/${num}.jpg`;
+        if (!used.has(url)) {
+            avatars.push(url);
+            used.add(url);
+        }
+    }
+    return avatars;
+};
+
+const generateReviewsForCarrier = async (user) => {
+    const prompt = `
+Generate between 7 and 10 unique, realistic, and positive reviews for a logistics carrier.
+Each review must have:
+- name (realistic, not repeating)
+- secondName (realistic, not repeating)
+- rate (4 or 5)
+- text (human, positive, 1-2 sentences, not generic, not repeating)
+- avatar (leave empty, will be filled later)
+- role ("customer")
+Return as a JSON array.
+`;
+
+    const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            model: 'gpt-4',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 900,
+            temperature: 0.8,
+        },
+        {
+            headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+        }
+    );
+
+    let reviews;
+    try {
+        reviews = JSON.parse(response.data.choices[0].message.content);
+        if (!Array.isArray(reviews)) throw new Error('Not an array');
+    } catch (e) {
+        console.error('Failed to parse reviews from AI:', e);
+        return;
+    }
+
+    const avatars = getUniqueAvatars(reviews.length);
+    const reviewsCount = reviews.length;
+    reviews = reviews.map((review, idx) => ({
+        ...review,
+        avatar: avatars[idx],
+        reviewsCount
+    }));
+
+    user.reviews = reviews;
+    await user.save();
+    console.log(`Filled reviews for carrier: ${user.email}`);
+};
+
+const fillCarrierReviews = async () => {
+    try {
+        const carriers = await User.find({ role: 'carrier', $or: [{ reviews: { $exists: false } }, { reviews: { $size: 0 } }] });
+        for (const user of carriers) {
+            await generateReviewsForCarrier(user);
+        }
+    } catch (err) {
+        console.error('Error filling carrier reviews:', err);
+    }
+};
+
+const generateAboutForCarrier = async (user) => {
+    // Compose a prompt using user info if available
+    const prompt = `
+Write a professional, friendly, and realistic "About" section for a logistics carrier.
+Include benefits of working with this carrier, years of experience (estimate if not provided), and what makes them stand out.
+Use the following info if available:
+- Name: ${user.companyName || user.name + ' ' + user.secondName}
+- City/State: ${user.city || ''}${user.state ? ', ' + user.state : ''}
+- Years of experience: ${user.serviceActivity || 'not specified'}
+- Service rating: ${user.serviceRating || 'not specified'}
+- Any other info: ${user.companyUrl ? 'Website: ' + user.companyUrl : ''}
+Make it unique and human, 3-5 sentences.
+`;
+
+    const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            model: 'gpt-4',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 300,
+            temperature: 0.8,
+        },
+        {
+            headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+        }
+    );
+
+    let about;
+    try {
+        about = response.data.choices[0].message.content.trim();
+    } catch (e) {
+        console.error('Failed to parse about from AI:', e);
+        return;
+    }
+
+    user.about = about;
+    await user.save();
+    console.log(`Filled about for carrier: ${user.email}`);
+};
+
+const fillCarrierAbouts = async () => {
+    try {
+        const carriers = await User.find({ role: 'carrier', $or: [{ about: { $exists: false } }, { about: '' }] });
+        for (const user of carriers) {
+            await generateAboutForCarrier(user);
+        }
+    } catch (err) {
+        console.error('Error filling carrier abouts:', err);
+    }
+};
+
+const isCarrierSuitable = (carrier, load) => {
+    return (
+        carrier.state &&
+        load.pickupLocation &&
+        load.pickupLocation.includes(carrier.state) &&
+        carrier.serviceRating >= 4
+    );
+};
+
+const calculateBidPrice = (carrier, load) => {
+    if (carrier.carrierMileagePricing && load.milesTrip) {
+        for (const mp of carrier.carrierMileagePricing) {
+            if (load.milesTrip >= mp.fromMiles && load.milesTrip <= mp.toMiles) {
+                return mp.price;
+            }
+        }
+    }
+    return Math.round((load.milesTrip || 100) * 2.5);
+};
+
+const generateBidLetter = async (carrier, load, bidPrice) => {
+    const prompt = `
+Write a professional, detailed, and persuasive bid letter (at least 350 words) from a logistics carrier to a customer for the following load.
+Include:
+- Carrier's company name: ${carrier.companyName || carrier.name + ' ' + carrier.secondName}
+- Carrier's experience: ${carrier.serviceActivity || 'not specified'} years
+- Carrier's rating: ${carrier.serviceRating || 'not specified'}
+- Load details: ${JSON.stringify({
+        title: load.title,
+        type: load.type,
+        pickupLocation: load.pickupLocation,
+        deliveryLocation: load.deliveryLocation,
+        milesTrip: load.milesTrip,
+        weight: load.weight,
+        description: load.description
+    })}
+- Bid price: $${bidPrice}
+- Why the carrier is a great fit for this load
+- Commitment to service, reliability, and customer satisfaction
+
+Letter:
+`;
+
+    const response = await axios.post(
+        'https://api.openai.com/v1/chat/completions',
+        {
+            model: 'gpt-4',
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: 1200,
+            temperature: 0.8,
+        },
+        {
+            headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+            },
+        }
+    );
+
+    return response.data.choices[0].message.content.trim();
+};
+
+const autoBidForAllLoads = async () => {
+    const carriers = await User.find({ role: 'carrier' });
+    const loads = await Load.find();
+
+    for (const load of loads) {
+        const existingCarrierIds = load.bids.map(b => b.carrierId);
+        const suitableCarriers = carriers.filter(carrier =>
+            isCarrierSuitable(carrier, load) && !existingCarrierIds.includes(carrier._id.toString())
+        );
+
+        for (const carrier of suitableCarriers) {
+            const bidPrice = calculateBidPrice(carrier, load);
+            const letter = await generateBidLetter(carrier, load, bidPrice);
+
+            load.bids.push({
+                carrierId: carrier._id,
+                carrierCompanyName: carrier.companyName || carrier.name + ' ' + carrier.secondName,
+                bidPrice: bidPrice.toString(),
+                letter,
+                estimatedDeliveryTime: '',
+            });
+
+            await sendEmail(
+                carrier.email,
+                'Your Auto-Bid System is active!',
+                `We appreciate your time and have integrated AI into your daily workspace to manage loads, make quick bids, and save you time and money! Your auto-bid for load "${load.title}" has been submitted.`
+            );
+        }
+
+        load.bidsQuantity = load.bids.length;
+        load.avgPrice = load.bids.length
+            ? Math.round(load.bids.reduce((sum, b) => sum + Number(b.bidPrice), 0) / load.bids.length)
+            : 0;
+
+        await load.save();
+    }
+    console.log('Auto-bidding completed for all loads.');
+};
+
 module.exports = {
     getUser,
     addCard,
+    fillCarrierAbouts,
     submitMovingQuote,
     contactUsRequest,
     updatePassword,
+    autoBidForAllLoads,
     selectCard,
     sendUserEmail,
     addDriver,
@@ -459,5 +716,7 @@ module.exports = {
     getAllDrivers,
     updateNotifications,
     updateLocation,
+    fillCarrierReviews,
     getSelectedCard,
+    addCarrierAdditionalInfo
 };
