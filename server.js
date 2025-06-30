@@ -30,6 +30,7 @@ app.use(helmet());
 
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:3001",
   "https://allship.ai",
   "https://www.allship.ai",
   "https://dashboard.allship.ai",

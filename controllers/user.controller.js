@@ -1,17 +1,25 @@
-const User = require('../models/User');
-const Load = require('../models/Load');
+const path = require('path');
+const fs = require('fs');
+const axios = require('axios');
 const bcrypt = require('bcryptjs');
-const sendEmail = require("../utils/sendEmail");
+
+const paypal = require('@paypal/checkout-server-sdk');
+const payPalClient = require('../utils/payPalClient');
+const client = payPalClient.client();
+
+const sendEmail = require('../utils/sendEmail');
+const {createZohoLead} = require('../utils/addToZoho');
+const {uploadImage} = require('../utils/uploadImage');
+const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
+
+const User = require('../models/User');
+const UserModel = require('../models/User');
+const Load = require('../models/Load');
+const Chat = require('../models/Chat');
 const CardModel = require('../models/Card');
 const TransactionModel = require('../models/Transaction');
 const HelpQuote = require('../models/HelpQuote');
-const path = require("path");
-const fs = require("fs");
-const { createZohoLead } = require('../utils/addToZoho');
-const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
-const {uploadImage} = require("../utils/uploadImage");
-const UserModel = require("../models/User");
-const axios = require("axios");
+
 const generatePassword = () => {
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()';
     let password = '';
@@ -220,11 +228,11 @@ const getSelectedCard = async (req, res) => {
 
 const updateUser = async (req, res) => {
     try {
-        const { userId } = req.body;
+        const {userId} = req.body;
         const updates = req.body;
 
         if (!userId) {
-            return res.status(400).json({ message: "User ID is required" });
+            return res.status(400).json({message: "User ID is required"});
         }
 
         if (req.files && req.files.avatar) {
@@ -234,16 +242,16 @@ const updateUser = async (req, res) => {
             updates.avatar = avatarUrl;
         }
 
-        const user = await User.findByIdAndUpdate(userId, updates, { new: true });
+        const user = await User.findByIdAndUpdate(userId, updates, {new: true});
 
         if (!user) {
-            return res.status(404).json({ message: "User not found" });
+            return res.status(404).json({message: "User not found"});
         }
 
-        res.status(200).json({ message: "User updated successfully", user });
+        res.status(200).json({message: "User updated successfully", user});
     } catch (error) {
         console.error("Error updating user:", error);
-        res.status(500).json({ message: "Error updating user", error });
+        res.status(500).json({message: "Error updating user", error});
     }
 };
 
@@ -356,9 +364,240 @@ const sendUserEmail = async (req, res) => {
     }
 };
 
+const createCarrierLoadPaymentSession = async (req, res) => {
+    try {
+        const data = JSON.parse(req.query.data);
+        console.log("Recieved data for payment session:", data);
+        const request = new paypal.orders.OrdersCreateRequest();
+        request.prefer("return=representation");
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [{
+                amount: {
+                    currency_code: 'USD',
+                    value: data.price ? data.price.toString() : '100.00'
+                }
+            }],
+            application_context: {
+                return_url: `${process.env.DASHBOARD_FRONTEND_URL}/payment-success?data=${encodeURIComponent(JSON.stringify(data))}`,
+                cancel_url: `${process.env.DASHBOARD_FRONTEND_URL}/payment-cancelled`
+            }
+        });
+        const order = await client.execute(request);
+        const approvalUrl = order.result.links.find(link => link.rel === 'approve').href;
+        res.json({paymentUrl: approvalUrl});
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({error: 'Failed to create payment session'});
+    }
+};
+
+
+const generateLoadId = async () => {
+    const prefix = '49-0013';
+    let uniqueSuffix, loadId, isUnique = false;
+    while (!isUnique) {
+        uniqueSuffix = `${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`;
+        loadId = `${prefix}-${uniqueSuffix}`;
+        const existingLoad = await Load.findOne({loadId});
+        if (!existingLoad) isUnique = true;
+    }
+    return loadId;
+};
+
+const handlePayPalPaymentSuccess = async (req, res) => {
+    try {
+        const { orderId, data } = req.body;
+
+        if (!orderId || !data || !data.userId) {
+            return res.status(400).json({ error: 'Missing orderId or userId in request.' });
+        }
+
+        const alreadyExists = await Load.findOne({ paypalOrderId: orderId });
+        if (alreadyExists) {
+            return res.status(200).json({
+                message: 'Load already exists.',
+                loadId: alreadyExists.loadId,
+                clearBookingData: true,
+                chosenCarrier: alreadyExists.chosenCarrier || null
+            });
+        }
+
+        const getRequest = new paypal.orders.OrdersGetRequest(orderId);
+        const order = await client.execute(getRequest);
+        let paymentStatus = order.result.status;
+
+        if (paymentStatus === 'APPROVED') {
+            try {
+                const captureRequest = new paypal.orders.OrdersCaptureRequest(orderId);
+                const capture = await client.execute(captureRequest);
+                paymentStatus = capture.result.status;
+            } catch (captureError) {
+                if (captureError.statusCode === 422 && captureError.message.includes('ORDER_ALREADY_CAPTURED')) {
+                    paymentStatus = 'COMPLETED';
+                } else {
+                    throw captureError;
+                }
+            }
+        }
+
+        if (paymentStatus !== 'COMPLETED') {
+            return res.status(400).json({ error: 'Payment not completed.' });
+        }
+
+        const user = await User.findById(data.userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const loadId = await generateLoadId();
+        const subType = (data.moveType || 'Moving')
+            .split('-')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ');
+
+        const load = new Load({
+            paypalOrderId: orderId,
+            userId: user._id,
+            email: user.email,
+            loadId,
+            type: 'Moving',
+            subType,
+            title: data.title || `${data.bedrooms || ''} Bedroom Move`,
+            status: 'Payed',
+            pickupLocation: data.from,
+            deliveryLocation: data.to,
+            pickupDate: data.pickupDate ? new Date(data.pickupDate) : undefined,
+            deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : undefined,
+            numberOfBedrooms: String(data.bedrooms || ''),
+            totalSquareFootage: String(data.volume || ''),
+            packingUnpackingServices: !!(data.fullPacking || data.halfPacking || data.quarterPacking),
+            storageNeeds: !!data.storage,
+            needExtraMovingSupplies: false,
+            furnitureDisassemblyReassembly: false,
+            appliancesBeingMoved: [],
+            largeFurnitureItems: [],
+            specialHandlingRequired: [],
+            price: data.price,
+            images: Array.isArray(data.images) ? data.images : [],
+            bidsQuantity: 0,
+            avgPrice: 0
+        });
+
+        await load.save();
+
+        // 🧹 Clean up duplicates by PayPal Order ID
+        const allLoads = await Load.find({ paypalOrderId: orderId }).sort({ createdAt: 1 });
+        const savedLoad = allLoads[0]; // Найстарший збережений — залишаємо
+        const toDelete = allLoads.slice(1); // Інші — видаляємо
+
+        for (const dup of toDelete) {
+            await Load.findByIdAndDelete(dup._id);
+            console.log(`🗑️ Deleted duplicate load: ${dup.loadId}`);
+        }
+
+        let chosenCarrierObj = null;
+
+        // 💬 Створення чату вже від почищеного Load (savedLoad)
+        if (data.chosenCarrier) {
+            const carrier = await User.findById(data.chosenCarrier);
+            const carrierCompanyName = carrier?.companyName || '';
+
+            const chat = new Chat({
+                carrierId: data.chosenCarrier,
+                shipperId: user._id,
+                loadId: savedLoad.loadId,
+                carrierCompanyName,
+                shipperName: user.name,
+                bidPrice: data.price,
+                title: savedLoad.title,
+                subType: savedLoad.subType,
+                chatHistory: []
+            });
+
+            await chat.save();
+
+            chosenCarrierObj = {
+                carrierId: data.chosenCarrier,
+                carrierCompanyName,
+                chatId: chat._id,
+                bidPrice: data.price
+            };
+
+            await Load.updateOne(
+                { _id: savedLoad._id },
+                { $set: { chosenCarrier: chosenCarrierObj } }
+            );
+        }
+
+        await sendEmail(user.email, 'Your load is created and paid', `Load ${savedLoad.loadId} is now active.`);
+
+        await createZohoLead({
+            firstName: user.name,
+            lastName: user.secondName,
+            email: user.email,
+            company: user.companyName,
+            phone: user.phone,
+            message: `New paid load: ${savedLoad.loadId}`,
+            source: 'Website',
+            title: savedLoad.title
+        });
+
+        // 💬 Створення чату вже від почищеного Load (savedLoad)
+        if (data.chosenCarrier) {
+            const carrier = await User.findById(data.chosenCarrier);
+            const carrierCompanyName = carrier?.companyName || '';
+
+            const chat = new Chat({
+                carrierId: data.chosenCarrier,
+                shipperId: user._id,
+                loadId: savedLoad.loadId,
+                carrierCompanyName,
+                shipperName: user.name,
+                bidPrice: data.price,
+                title: savedLoad.title,
+                subType: savedLoad.subType,
+                chatHistory: []
+            });
+
+            await chat.save();
+
+            chosenCarrierObj = {
+                carrierId: data.chosenCarrier,
+                carrierCompanyName,
+                chatId: chat._id,
+                bidPrice: data.price
+            };
+
+            await Load.updateOne(
+                { _id: savedLoad._id },
+                { $set: { chosenCarrier: chosenCarrierObj } }
+            );
+
+            const duplicateChats = await Chat.find({ loadId: savedLoad.loadId }).sort({ createdAt: 1 });
+            if (duplicateChats.length > 1) {
+                const chatsToDelete = duplicateChats.slice(1);
+                for (const c of chatsToDelete) {
+                    await Chat.findByIdAndDelete(c._id);
+                    console.log(`🗑️ Deleted duplicate chat for loadId: ${savedLoad.loadId}`);
+                }
+            }
+        }
+
+
+        return res.status(200).json({
+            message: 'Payment verified and actions completed.',
+            clearBookingData: true,
+            chosenCarrier: chosenCarrierObj
+        });
+
+    } catch (err) {
+        console.error('❌ Error in handlePayPalPaymentSuccess:', err);
+        res.status(500).json({ error: 'Post-payment logic failed' });
+    }
+};
+
 
 const contactUsRequest = async (req, res) => {
-    const { name, email, message } = req.body;
+    const {name, email, message} = req.body;
 
     try {
         await createZohoLead({
@@ -382,28 +621,28 @@ const contactUsRequest = async (req, res) => {
             "You will receive a notification when your request is reviewed."
         );
 
-        res.status(200).json({ message: 'Lead saved & email sent successfully' });
+        res.status(200).json({message: 'Lead saved & email sent successfully'});
     } catch (error) {
         console.error('Error processing contact request:', error);
-        res.status(500).json({ message: 'Failed to handle request' });
+        res.status(500).json({message: 'Failed to handle request'});
     }
 };
 
 const addCarrierAdditionalInfo = async (req, res) => {
-    const { userId, mileagePricing, serviceCosts } = req.body;
+    const {userId, mileagePricing, serviceCosts} = req.body;
 
     try {
-        const user = await UserModel.findOne({ _id: userId, role: 'carrier' });
-        if (!user) return res.status(404).json({ message: 'Carrier not found' });
+        const user = await UserModel.findOne({_id: userId, role: 'carrier'});
+        if (!user) return res.status(404).json({message: 'Carrier not found'});
 
         user.carrierMileagePricing = mileagePricing;
         user.carrierServiceCosts = serviceCosts;
         user.carrierEnteredAdditionalInfo = true;
         await user.save();
 
-        res.status(200).json({ message: 'Additional info added', user });
+        res.status(200).json({message: 'Additional info added', user});
     } catch (err) {
-        res.status(500).json({ message: 'Server error', error: err.message });
+        res.status(500).json({message: 'Server error', error: err.message});
     }
 };
 
@@ -457,10 +696,10 @@ We will reach out to you shortly.`);
             message: `From: ${from} → ${to}, Home Size: ${homeSize}, Date: ${movingDate}, Info: ${additionalInfo}`,
         });
 
-        res.status(200).json({ message: 'Quote submitted successfully' });
+        res.status(200).json({message: 'Quote submitted successfully'});
     } catch (error) {
         console.error('Error submitting quote:', error);
-        res.status(500).json({ message: 'Server error while submitting quote', error });
+        res.status(500).json({message: 'Server error while submitting quote', error});
     }
 };
 
@@ -498,7 +737,7 @@ Return as a JSON array.
         'https://api.openai.com/v1/chat/completions',
         {
             model: 'gpt-4',
-            messages: [{ role: 'user', content: prompt }],
+            messages: [{role: 'user', content: prompt}],
             max_tokens: 900,
             temperature: 0.8,
         },
@@ -534,7 +773,7 @@ Return as a JSON array.
 
 const fillCarrierReviews = async () => {
     try {
-        const carriers = await User.find({ role: 'carrier', $or: [{ reviews: { $exists: false } }, { reviews: { $size: 0 } }] });
+        const carriers = await User.find({role: 'carrier', $or: [{reviews: {$exists: false}}, {reviews: {$size: 0}}]});
         for (const user of carriers) {
             await generateReviewsForCarrier(user);
         }
@@ -561,7 +800,7 @@ Make it unique and human, 3-5 sentences.
         'https://api.openai.com/v1/chat/completions',
         {
             model: 'gpt-4',
-            messages: [{ role: 'user', content: prompt }],
+            messages: [{role: 'user', content: prompt}],
             max_tokens: 300,
             temperature: 0.8,
         },
@@ -588,7 +827,7 @@ Make it unique and human, 3-5 sentences.
 
 const fillCarrierAbouts = async () => {
     try {
-        const carriers = await User.find({ role: 'carrier', $or: [{ about: { $exists: false } }, { about: '' }] });
+        const carriers = await User.find({role: 'carrier', $or: [{about: {$exists: false}}, {about: ''}]});
         for (const user of carriers) {
             await generateAboutForCarrier(user);
         }
@@ -644,7 +883,7 @@ Letter:
         'https://api.openai.com/v1/chat/completions',
         {
             model: 'gpt-4',
-            messages: [{ role: 'user', content: prompt }],
+            messages: [{role: 'user', content: prompt}],
             max_tokens: 1200,
             temperature: 0.8,
         },
@@ -660,7 +899,7 @@ Letter:
 };
 
 const autoBidForAllLoads = async () => {
-    const carriers = await User.find({ role: 'carrier' });
+    const carriers = await User.find({role: 'carrier'});
     const loads = await Load.find();
 
     for (const load of loads) {
@@ -698,6 +937,112 @@ const autoBidForAllLoads = async () => {
     console.log('Auto-bidding completed for all loads.');
 };
 
+const findMatchedCarriers = async (req, res) => {
+    const formData = req.body;
+
+    const calculateAverageRating = reviews => {
+        if (!reviews?.length) return 0;
+        const sum = reviews.reduce((a, r) => a + (r.rate || 0), 0);
+        return Math.round((sum / reviews.length) * 10) / 10;
+    };
+
+    try {
+        const carriers = await User.find({
+            role: 'carrier',
+            $expr: {
+                $and: [
+                    {$gt: [{$size: '$reviews'}, 0]},
+                    {$gt: [{$size: '$carrierMileagePricing'}, 0]}
+                ]
+            }
+        });
+
+        const scored = carriers.map(c => {
+            const avgRating = calculateAverageRating(c.reviews);
+            const from = (formData.from || '').toLowerCase();
+            const state = (c.state || '').toLowerCase();
+            const inStateBonus = from && state && from.includes(state) ? 10 : 0;
+
+            const score = avgRating * 5 + (parseInt(c.serviceActivity) || 0) * 3 + Math.min(c.reviews.length, 10);
+
+            return {c, score, avgRating, inStateBonus};
+        });
+
+        const top = scored.sort((a, b) => b.score + b.inStateBonus - (a.score + a.inStateBonus)).slice(0, 6);
+
+        const enriched = await Promise.all(top.map(async (entry, idx) => {
+            const c = entry.c;
+
+            // Подготовка prompt для AI
+            const prompt = `
+User has a moving request:
+FROM: "${formData.from}" TO: "${formData.to}"
+PickupDate: "${formData.pickupDate}", DeliveryDate: "${formData.deliveryDate}"
+Options: fullPacking:${formData.fullPacking}, halfPacking:${formData.halfPacking}, quarterPacking:${formData.quarterPacking}, storage:${formData.storage}, unpacking:${formData.unpacking}
+
+Carrier:
+Name: ${c.companyName}
+State: ${c.state}
+Rating: ${entry.avgRating}
+Years operating: ${c.serviceActivity}
+Pricing per mile tiers: ${JSON.stringify(c.carrierMileagePricing)}
+Service costs: packing ${c.carrierServiceCosts.packingCost}, unpacking ${c.carrierServiceCosts.unpackingCost}, storage ${c.carrierServiceCosts.storageCost}/mo
+Count of reviews: ${c.reviews.length}
+
+Tasks:
+1) Estimate distance in miles between from/to.
+2) Based on mileagePricing, calculate distanceCharge.
+3) Add costs: packing/unpacking/storage if selected.
+4) Calculate totalPrice = distanceCharge + extras.
+5) Invent approximate pastOrders between 30-100 if unknown.
+6) Generate description ≤150 characters summarizing fit.
+
+Respond with strict JSON:
+{
+  distance: <number>,
+  distanceCharge: <number>,
+  packingCharge: <number>,
+  unpackingCharge: <number>,
+  storageCharge: <number>,
+  totalPrice: <number>,
+  pastOrders: <number>,
+  description: "<150-char>"
+}
+`;
+
+            const aiResp = await axios.post('https://api.openai.com/v1/chat/completions', {
+                model: 'gpt-4',
+                messages: [{role: 'user', content: prompt}],
+                max_tokens: 300,
+                temperature: 0.7
+            }, {headers: {Authorization: `Bearer ${process.env.OPENAI_KEY}`}});
+
+            const data = JSON.parse(aiResp.data.choices[0].message.content.trim());
+
+            return {
+                _id: c._id,
+                name: c.name,
+                secondName: c.secondName,
+                companyName: c.companyName,
+                avatar: c.avatar,
+                state: c.state,
+                experience: `${c.serviceActivity || 0} years`,
+                rating: entry.avgRating,
+                carrierServiceCosts: c.carrierServiceCosts,
+                carrierMileagePricing: c.carrierMileagePricing,
+                reviewsCount: c.reviews.length,
+                bestMatch: idx === 0,
+                ...data
+            };
+        }));
+
+        res.json({matchedCarriers: enriched});
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({message: 'Error', error: err.message});
+    }
+};
+
 module.exports = {
     getUser,
     addCard,
@@ -711,6 +1056,9 @@ module.exports = {
     addDriver,
     getAllTransactions,
     getAllCards,
+    handlePayPalPaymentSuccess,
+    findMatchedCarriers,
+    createCarrierLoadPaymentSession,
     createHelpForm,
     updateUser,
     getAllDrivers,
