@@ -375,7 +375,7 @@ const createCarrierLoadPaymentSession = async (req, res) => {
             purchase_units: [{
                 amount: {
                     currency_code: 'USD',
-                    value: data.price ? data.price.toString() : '100.00'
+                    value: data.price ? data.price.toString() : '1.00'
                 }
             }],
             application_context: {
