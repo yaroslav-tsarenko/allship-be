@@ -53,7 +53,6 @@ const addDriver = async (req, res) => {
 
     try {
         const existingUser = await User.findOne({$or: [{phone}, {email}]});
-
         if (existingUser) {
             return res.status(400).json({message: 'User with the same phone or email already exists'});
         }
@@ -899,43 +898,75 @@ Letter:
 };
 
 const autoBidForAllLoads = async () => {
-    const carriers = await User.find({role: 'carrier'});
-    const loads = await Load.find();
+    const carriers = await User.find({
+        role: 'carrier',
+        carrierMileagePricing: { $exists: true, $not: { $size: 0 } },
+        carrierServiceCosts: { $exists: true },
+        reviews: { $exists: true, $not: { $size: 0 } },
+        serviceActivity: { $exists: true }
+    });
+    const loads = await Load.find({
+        status: 'Active',
+        bids: { $exists: true, $size: 0 },
+        pickupLocation: { $ne: null },
+        deliveryLocation: { $ne: null }
+    });
+    console.log(`🔍 Found ${carriers.length} carriers and ${loads.length} active loads to process.`);
+    const globalCarrierBidMap = {};
+    for (const carrier of carriers) {
+        const price = Math.floor(Math.random() * (3500 - 1000 + 1)) + 1000;
+        const companyName = carrier.companyName || `${carrier.name} ${carrier.secondName}`;
+        const experience = carrier.serviceActivity?.yearsOfExperience || Math.floor(Math.random() * 6 + 1);
+        const rating = (carrier.reviews.reduce((sum, r) => sum + (r.rating || 5), 0) / carrier.reviews.length).toFixed(1);
+        const letter = `
+Hello,
+
+My name is ${carrier.name} from ${companyName}. With over ${experience} years of experience in the logistics industry, I specialize in providing dependable, on-time deliveries with excellent customer communication.
+
+Based on the route and requirements, I can offer to deliver your shipment for **$${price}**. My team and I prioritize careful handling, real-time tracking, and customer satisfaction — as reflected in our ${rating}-star rating from previous clients.
+
+If you choose to work with us, I assure you a smooth, professional, and worry-free experience from pickup to drop-off.
+
+Looking forward to assisting you!
+Best regards,
+${companyName}
+        `.trim();
+
+        globalCarrierBidMap[carrier._id.toString()] = {
+            bidPrice: price.toString(),
+            letter
+        };
+    }
 
     for (const load of loads) {
-        const existingCarrierIds = load.bids.map(b => b.carrierId);
-        const suitableCarriers = carriers.filter(carrier =>
-            isCarrierSuitable(carrier, load) && !existingCarrierIds.includes(carrier._id.toString())
-        );
+        for (const carrier of carriers) {
+            const { bidPrice, letter } = globalCarrierBidMap[carrier._id.toString()];
 
-        for (const carrier of suitableCarriers) {
-            const bidPrice = calculateBidPrice(carrier, load);
-            const letter = await generateBidLetter(carrier, load, bidPrice);
+            const deliveryDays = Math.floor(Math.random() * 7) + 1;
+            const estimatedDeliveryTime = new Date();
+            estimatedDeliveryTime.setDate(estimatedDeliveryTime.getDate() + deliveryDays);
 
             load.bids.push({
-                carrierId: carrier._id,
-                carrierCompanyName: carrier.companyName || carrier.name + ' ' + carrier.secondName,
-                bidPrice: bidPrice.toString(),
+                carrierId: carrier._id.toString(),
+                carrierCompanyName: carrier.companyName || `${carrier.name} ${carrier.secondName}`,
+                bidPrice,
+                aiMadeBid: true,
                 letter,
-                estimatedDeliveryTime: '',
+                estimatedDeliveryTime,
+                createdAt: new Date()
             });
-
-            await sendEmail(
-                carrier.email,
-                'Your Auto-Bid System is active!',
-                `We appreciate your time and have integrated AI into your daily workspace to manage loads, make quick bids, and save you time and money! Your auto-bid for load "${load.title}" has been submitted.`
-            );
         }
-
         load.bidsQuantity = load.bids.length;
-        load.avgPrice = load.bids.length
-            ? Math.round(load.bids.reduce((sum, b) => sum + Number(b.bidPrice), 0) / load.bids.length)
-            : 0;
-
+        load.avgPrice = Math.round(
+            load.bids.reduce((sum, b) => sum + Number(b.bidPrice), 0) / load.bids.length
+        );
+        load.markModified('bids');
         await load.save();
+        console.log(`✅ Load ${load.loadId} filled with ${load.bids.length} AI-marked bids.`);
     }
-    console.log('Auto-bidding completed for all loads.');
+    console.log('🎯 Auto-bidding complete. All active empty loads filled.');
 };
+
 
 const findMatchedCarriers = async (req, res) => {
     const formData = req.body;
@@ -944,6 +975,24 @@ const findMatchedCarriers = async (req, res) => {
         if (!reviews?.length) return 0;
         const sum = reviews.reduce((a, r) => a + (r.rate || 0), 0);
         return Math.round((sum / reviews.length) * 10) / 10;
+    };
+
+    const estimateDistance = (from, to) => {
+        if (!from || !to) return 50; // default
+        return Math.max(30, Math.floor(Math.random() * 200)); // random for demo
+    };
+
+    // Find correct price tier
+    const getMileagePrice = (pricing, distance) => {
+        if (!Array.isArray(pricing)) return 2;
+        let price = pricing[0]?.price || 2;
+        for (const tier of pricing) {
+            if (distance >= tier.from && distance <= tier.to) {
+                price = tier.price;
+                break;
+            }
+        }
+        return price;
     };
 
     try {
@@ -970,54 +1019,22 @@ const findMatchedCarriers = async (req, res) => {
 
         const top = scored.sort((a, b) => b.score + b.inStateBonus - (a.score + a.inStateBonus)).slice(0, 6);
 
-        const enriched = await Promise.all(top.map(async (entry, idx) => {
+        const enriched = top.map((entry, idx) => {
             const c = entry.c;
+            const distance = estimateDistance(formData.from, formData.to);
+            const mileagePrice = getMileagePrice(c.carrierMileagePricing, distance);
+            const distanceCharge = distance * mileagePrice;
 
-            // Подготовка prompt для AI
-            const prompt = `
-User has a moving request:
-FROM: "${formData.from}" TO: "${formData.to}"
-PickupDate: "${formData.pickupDate}", DeliveryDate: "${formData.deliveryDate}"
-Options: fullPacking:${formData.fullPacking}, halfPacking:${formData.halfPacking}, quarterPacking:${formData.quarterPacking}, storage:${formData.storage}, unpacking:${formData.unpacking}
+            const packingCharge = formData.fullPacking ? c.carrierServiceCosts.packingCost : 0;
+            const unpackingCharge = formData.unpacking ? c.carrierServiceCosts.unpackingCost : 0;
+            const storageCharge = formData.storage ? c.carrierServiceCosts.storageCost : 0;
 
-Carrier:
-Name: ${c.companyName}
-State: ${c.state}
-Rating: ${entry.avgRating}
-Years operating: ${c.serviceActivity}
-Pricing per mile tiers: ${JSON.stringify(c.carrierMileagePricing)}
-Service costs: packing ${c.carrierServiceCosts.packingCost}, unpacking ${c.carrierServiceCosts.unpackingCost}, storage ${c.carrierServiceCosts.storageCost}/mo
-Count of reviews: ${c.reviews.length}
+            const totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
 
-Tasks:
-1) Estimate distance in miles between from/to.
-2) Based on mileagePricing, calculate distanceCharge.
-3) Add costs: packing/unpacking/storage if selected.
-4) Calculate totalPrice = distanceCharge + extras.
-5) Invent approximate pastOrders between 30-100 if unknown.
-6) Generate description ≤150 characters summarizing fit.
+            const pastOrders = c.pastOrders || Math.floor(Math.random() * 70) + 30;
 
-Respond with strict JSON:
-{
-  distance: <number>,
-  distanceCharge: <number>,
-  packingCharge: <number>,
-  unpackingCharge: <number>,
-  storageCharge: <number>,
-  totalPrice: <number>,
-  pastOrders: <number>,
-  description: "<150-char>"
-}
-`;
-
-            const aiResp = await axios.post('https://api.openai.com/v1/chat/completions', {
-                model: 'gpt-4',
-                messages: [{role: 'user', content: prompt}],
-                max_tokens: 300,
-                temperature: 0.7
-            }, {headers: {Authorization: `Bearer ${process.env.OPENAI_KEY}`}});
-
-            const data = JSON.parse(aiResp.data.choices[0].message.content.trim());
+            // Simple description algorithm
+            const description = `${c.companyName} rated ${entry.avgRating}/5, serves ${c.state}, est. ${distance}mi, total ~$${totalPrice}.`;
 
             return {
                 _id: c._id,
@@ -1032,14 +1049,124 @@ Respond with strict JSON:
                 carrierMileagePricing: c.carrierMileagePricing,
                 reviewsCount: c.reviews.length,
                 bestMatch: idx === 0,
-                ...data
+                distance,
+                distanceCharge,
+                packingCharge,
+                unpackingCharge,
+                storageCharge,
+                totalPrice,
+                pastOrders,
+                description
             };
-        }));
+        });
 
         res.json({matchedCarriers: enriched});
     } catch (err) {
         console.error(err);
         res.status(500).json({message: 'Error', error: err.message});
+    }
+};
+
+const createLoadFromCookie = async (req, res) => {
+    try {
+        const data = req.body;
+        if (!data || !data.userId) {
+            return res.status(400).json({ error: 'Missing userId or data.' });
+        }
+
+        const user = await User.findById(data.userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        const formatSubType = (type) => {
+            if (!type) return 'Moving';
+            return type
+                .split('-')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join(' ');
+        };
+        const subType = formatSubType(data.moveType);
+
+        const loadId = await generateLoadId();
+
+        let chosenCarrierObj = null;
+        if (data.chosenCarrier) {
+            const carrierUser = await User.findById(data.chosenCarrier);
+            const carrierCompanyName = carrierUser && carrierUser.companyName ? carrierUser.companyName : '';
+
+            const chat = new Chat({
+                carrierId: data.chosenCarrier,
+                shipperId: user._id,
+                loadId,
+                carrierCompanyName,
+                shipperName: user.name,
+                bidPrice: data.price,
+                title: data.title || `${data.bedrooms || ''} Bedroom Move`,
+                subType,
+                chatHistory: []
+            });
+            await chat.save();
+
+            chosenCarrierObj = {
+                carrierId: data.chosenCarrier,
+                carrierCompanyName,
+                chatId: chat._id,
+                bidPrice: data.price
+            };
+        }
+
+        const newLoad = new Load({
+            userId: user._id,
+            email: user.email,
+            loadId,
+            type: 'Moving',
+            subType,
+            title: data.title || `${data.bedrooms || ''} Bedroom Move`,
+            status: 'Inactive',
+            pickupLocation: data.from,
+            deliveryLocation: data.to,
+            pickupDate: data.pickupDate ? new Date(data.pickupDate) : undefined,
+            deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : undefined,
+            numberOfBedrooms: String(data.bedrooms || ''),
+            totalSquareFootage: String(data.volume || ''),
+            packingUnpackingServices: !!(data.fullPacking || data.halfPacking || data.quarterPacking),
+            storageNeeds: !!data.storage,
+            needExtraMovingSupplies: false,
+            furnitureDisassemblyReassembly: false,
+            appliancesBeingMoved: [],
+            largeFurnitureItems: [],
+            specialHandlingRequired: [],
+            price: data.price,
+            images: Array.isArray(data.images) ? data.images : [],
+            bidsQuantity: 0,
+            avgPrice: 0,
+            ...(chosenCarrierObj && { chosenCarrier: chosenCarrierObj })
+        });
+
+        await newLoad.save();
+
+        await sendEmail(
+            user.email,
+            `Order ${loadId} Created Successfully`,
+            `Dear Customer,
+
+Your order (${loadId}) has been created successfully and is currently inactive.
+
+To activate your load and proceed with the service, please complete a payment of $100.
+
+Thank you for choosing AllShip. If you have any questions, feel free to contact our support team.
+
+Best regards,
+AllShip Team`
+        );
+
+        res.status(200).json({
+            message: 'Load created from cookie.',
+            loadId: newLoad.loadId,
+            chosenCarrier: chosenCarrierObj
+        });
+    } catch (err) {
+        console.error('Error in createLoadFromCookie:', err);
+        res.status(500).json({ error: 'Failed to create load from cookie' });
     }
 };
 
@@ -1065,6 +1192,7 @@ module.exports = {
     updateNotifications,
     updateLocation,
     fillCarrierReviews,
+    createLoadFromCookie,
     getSelectedCard,
     addCarrierAdditionalInfo
 };

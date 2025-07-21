@@ -1,12 +1,18 @@
+require('dotenv').config();
+const mongoose = require('mongoose');
 const Load = require('../models/Load');
 const User = require('../models/User');
 const Chat = require('../models/Chat');
 const TransactionModel = require('../models/Transaction');
 const sendEmail = require('../utils/sendEmail');
 const createMollieClient = require('@mollie/api-client').default;
-const mollie = createMollieClient({ apiKey: "test_T2NbH38hTvDDPASvnQ9aRqdWeWrT5B" });
-const { sendMessageToChannel } = require('../telegram-bot/telegramBot');
+const crypto = require('crypto');
+const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
 const {uploadImage} = require("../utils/uploadImage");
+const {client, paypal} = require('../utils/payPalClient');
+
+const {v4: uuidv4} = require('uuid');
+const UserModel = require("../models/User");
 
 const generateLoadId = async () => {
     const prefix = '49-0013';
@@ -32,7 +38,7 @@ const createLoad = async (req, res) => {
         const user = await User.findById(userId);
         if (!user) {
             console.log('User not found for ID:', userId);
-            return res.status(404).json({ message: 'User not found' });
+            return res.status(404).json({message: 'User not found'});
         }
         const loadData = req.body;
         loadData.userId = user._id;
@@ -98,19 +104,9 @@ const createLoad = async (req, res) => {
 
         sendMessageToChannel(messageToChannel);
 
-        const randomDelay = Math.floor(Math.random() * (5 - 1 + 1) + 1) * 60 * 1000;
-        setTimeout(async () => {
-            try {
-                newLoad.status = 'Active';
-                await newLoad.save();
-                sendEmail(loadData.email, `AI review your ${loadSubType} load🤖`, 'AI reviewed your load and made it active for carriers, now your load is visible to carriers');
-            } catch (error) {
-                console.error('Error updating load status:', error);
-            }
-        }, randomDelay);
     } catch (error) {
         console.error('Error creating load:', error);
-        res.status(500).json({ message: 'Error creating load', error });
+        res.status(500).json({message: 'Error creating load', error});
     }
 };
 
@@ -207,6 +203,39 @@ const updateLoadStatus = async (req, res) => {
     }
 };
 
+const createBidPaymentSession = async (req, res) => {
+    try {
+        const { loadId, carrierId, companyName, bidPrice, shipperName, shipperId } = req.body;
+        if (!loadId || !carrierId || !companyName || !bidPrice || !shipperName || !shipperId) {
+            return res.status(400).json({ message: 'Missing bid data' });
+        }
+
+        const request = new paypal.orders.OrdersCreateRequest();
+        request.prefer('return=representation');
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [{
+                amount: {
+                    currency_code: 'USD',
+                    value: "100"
+                }
+            }],
+            application_context: {
+                return_url: `${process.env.DASHBOARD_URL}/bid-applied`,
+                cancel_url: `${process.env.DASHBOARD_URL}/`
+            }
+        });
+
+        const order = await client().execute(request);
+        const approvalUrl = order.result.links.find(link => link.rel === 'approve').href;
+
+        res.status(200).json({ approvalUrl, orderId: order.result.id });
+    } catch (error) {
+        console.error('Error creating PayPal bid session:', error);
+        res.status(500).json({ error: 'Failed to create PayPal session' });
+    }
+};
+
 const getLoadById = async (req, res) => {
     try {
         const {loadId} = req.params;
@@ -239,61 +268,149 @@ const deleteLoadById = async (req, res) => {
     }
 };
 
-const applyBid = async (req, res) => {
+const confirmPayment = async (req, res) => {
     try {
-        const {loadId, carrierId, companyName, bidPrice, shipperName, shipperId} = req.body;
-        const load = await Load.findOne({loadId});
+        const {userId, loadPaymentId} = req.body;
+        if (!userId || !loadPaymentId) {
+            return res.status(400).json({message: 'Missing userId or loadPaymentId'});
+        }
+
+        const load = await Load.findOne({loadId: loadPaymentId});
         if (!load) {
             return res.status(404).json({message: 'Load not found'});
         }
 
-        const userEmail = load.email;
-        const carrier = await User.findById(carrierId);
-        const carrierEmail = carrier.email;
+        await TransactionModel.create({
+            purpose: `Payment for load ${load._id}`,
+            amount: load.price || '100',
+            type: 'payment',
+            userId,
+        });
 
-        load.status = 'Applied';
+        load.status = 'Payed';
         await load.save();
 
-        const chat = new Chat({
-            carrierId: carrierId,
-            shipperId: shipperId,
-            loadId: loadId,
+        const user = await UserModel.findById(userId);
+        if (user && user.email) {
+            await sendEmail(
+                user.email,
+                'Payment Confirmation',
+                `Your payment for load ${load._id} was successful.`
+            );
+        }
+
+        res.json({message: 'Payment confirmed, transaction created, status updated.'});
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({message: 'Server error'});
+    }
+};
+
+const updateLoadCarrierStatus = async ({ loadId, companyName, chatId, carrierId, status }) => {
+    return await Load.findOneAndUpdate(
+        { loadId },
+        {
+            status,
+            chosenCarrier: {
+                carrierCompanyName: companyName,
+                chatId,
+                carrierId
+            }
+        },
+        { new: true }
+    );
+};
+
+const removeDuplicatesChat = async (loadId) => {
+    const chats = await Chat.find({ loadId });
+    if (chats.length > 1) {
+        const sorted = chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        const [keep, ...duplicates] = sorted;
+        const duplicateIds = duplicates.map(chat => chat._id);
+        await Chat.deleteMany({ _id: { $in: duplicateIds } });
+        return duplicateIds;
+    }
+    return [];
+};
+
+const applyBid = async (req, res) => {
+    console.log("Request body for applyBid:", req.body);
+    try {
+        const { loadId, carrierId, companyName, bidPrice, shipperName, shipperId } = req.body;
+
+        if (!loadId || !carrierId || !companyName || !bidPrice || !shipperName || !shipperId) {
+            return res.status(400).json({ message: 'Missing required fields' });
+        }
+
+        const load = await Load.findOne({ loadId });
+        if (!load) return res.status(404).json({ message: 'Load not found' });
+
+        const userEmail = load.email;
+        const carrier = await User.findById(carrierId);
+        if (!carrier) return res.status(404).json({ message: 'Carrier not found' });
+
+        const chat = await new Chat({
+            carrierId,
+            shipperId,
+            loadId,
             title: load.title,
             subType: load.subType,
-            bidPrice: bidPrice,
-            shipperName: shipperName,
+            bidPrice,
+            shipperName,
             carrierCompanyName: companyName,
             chatHistory: []
+        }).save();
+
+        // Use the new function here
+        const updatedLoad = await updateLoadCarrierStatus({
+            loadId,
+            companyName,
+            chatId: chat._id.toString(),
+            carrierId,
+            status: "Payed"
         });
-        await chat.save();
+        await removeDuplicatesChat(loadId);
+        if (!updatedLoad) {
+            console.error('Failed to update load with bid info');
+            return res.status(500).json({ message: 'Failed to update load' });
+        }
 
         await Promise.all([
-            sendEmail(userEmail, "Congratulations, your new experience with carrier", "You have successfully applied a bid from carrier"),
-            sendEmail(carrierEmail, "Congratulations, shipper applied bid from you", "Hurry up! You catch your destiny")
+            sendEmail(userEmail, "Your bid has been applied", "You've successfully applied the bid."),
+            sendEmail(carrier.email, "A shipper accepted your bid", "Check your chat now.")
         ]);
 
-        res.status(200).json({message: 'Bid applied and chat created successfully', chat});
+        return res.status(200).json({ message: 'Bid applied and chat created successfully', chat });
     } catch (error) {
         console.error('Error applying bid:', error);
-        res.status(500).json({message: 'Error applying bid', error});
+        return res.status(500).json({ message: 'Internal error', error: error.message });
     }
 };
 
 const assignDriver = async (req, res) => {
     const { loadId, driverId } = req.body;
+    console.log("Request body for assignDriver:", req.body);
     try {
-        const load = await Load.findOne({loadId});
+        const load = await Load.findOne({ loadId });
         if (!load) {
             return res.status(404).json({ message: 'Load not found' });
         }
-        load.assignedDriver = driverId;
-        await load.save();
         const driver = await User.findById(driverId);
         if (!driver || driver.role !== 'driver') {
             return res.status(404).json({ message: 'Driver not found' });
         }
-        driver.assignedLoads.push(loadId);
-        await driver.save();
+        load.assignedDriver = {
+            driverId: driverId,
+            lat: driver.lat || null,
+            lng: driver.lng || null,
+            avatar: driver.avatar || null
+        };
+        await load.save();
+        if (!driver.assignedLoads.includes(loadId)) {
+            driver.assignedLoads.push(loadId);
+            await driver.save();
+        }
         res.status(200).json({ message: 'Driver assigned successfully' });
     } catch (error) {
         console.error('Error:', error);
@@ -301,51 +418,157 @@ const assignDriver = async (req, res) => {
     }
 };
 
-
 const payLoad = async (req, res) => {
-    const { loadId, bidPrice, userId } = req.body;
-
     try {
-        const formattedBidPrice = parseFloat(bidPrice).toFixed(2);
-        const payment = await mollie.payments.create({
-            amount: {
-                value: formattedBidPrice,
-                currency: 'USD'
-            },
-            description: `Payment for load ${loadId}`,
-            redirectUrl: 'http://localhost:3000/success',
-            webhookUrl: 'https://your-webhook-url.com',
+        const FRONTEND_URL = process.env.DASHBOARD_URL;
+        const request = new paypal.orders.OrdersCreateRequest();
+        request.prefer('return=representation');
+        request.requestBody({
+            intent: 'CAPTURE',
+            purchase_units: [{
+                amount: {
+                    currency_code: 'USD',
+                    value: '100.00'
+                }
+            }],
+            application_context: {
+                return_url: `${FRONTEND_URL}/load-payed`,
+                cancel_url: `${FRONTEND_URL}/`
+            }
         });
 
-        const load = await Load.findOne({ loadId });
-        if (!load) {
-            return res.status(404).json({ message: 'Load not found' });
-        }
-        console.log("Load: ", load);
-        load.status = 'Payed';
-        await load.save();
-
-        const newTransaction = new TransactionModel({
-            purpose: `Payment for load`,
-            amount: formattedBidPrice,
-            type: 'payment',
-            userId: userId,
-            date: new Date()
-        });
-        await newTransaction.save();
-        res.status(200).json({ checkoutUrl: payment.getCheckoutUrl() });
-        const message = `New payment for load:
-Load ID: ${loadId}
-Amount: ${formattedBidPrice}$`;
-        sendMessageToChannel(message);
+        const order = await client().execute(request);
+        const approvalUrl = order.result.links.find(link => link.rel === 'approve').href;
+        res.status(200).json({approvalUrl, orderId: order.result.id});
     } catch (error) {
-        console.error('Error creating checkout session:', error);
-        res.status(500).json({ message: 'Error creating checkout session', error });
+        console.error('PayPal session error:', error);
+        res.status(500).json({error: 'Failed to create PayPal session'});
+    }
+};
+
+const createLoadFromCookie = async (req, res) => {
+    try {
+        const { bookingData, userId, email } = req.body;
+        if (!bookingData) {
+            return res.status(400).json({ error: 'Missing bookingData' });
+        }
+
+        const parsed =
+            typeof bookingData === 'string'
+                ? JSON.parse(decodeURIComponent(bookingData))
+                : bookingData;
+
+        const {
+            from,
+            to,
+            pickupDate,
+            deliveryDate,
+            bedrooms,
+            fullPacking,
+            unpacking,
+            storage,
+            chosenCarrier,
+        } = parsed;
+
+        // ✅ Create a stable booking hash
+        const bookingHash = crypto
+            .createHash('sha256')
+            .update(JSON.stringify(parsed))
+            .digest('hex');
+
+        // ✅ Check if load already exists
+        const existingLoad = await Load.findOne({ bookingHash });
+        if (existingLoad) {
+            return res.status(200).json({
+                message: 'Load already exists for this booking',
+                loadId: existingLoad._id,
+                alreadyExists: true,
+            });
+        }
+
+        // ✅ Generate other data
+        const paypalOrderId = `paypal_${uuidv4()}`;
+        const carrier = await User.findById(chosenCarrier);
+        const shipper = await User.findById(userId);
+        const loadId = await generateLoadId();
+
+        const newChat = new Chat({
+            carrierId: chosenCarrier,
+            shipperId: userId,
+            loadId,
+            title: `Moving from ${from} to ${to}`,
+            subType: 'Long Distance Moving',
+            carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
+            shipperName: shipper?.name + shipper?.secondName || 'Unknown Shipper',
+            bidPrice: null,
+            chatHistory: [],
+        });
+
+        await newChat.save();
+
+        const newLoad = new Load({
+            userId,
+            email,
+            loadId,
+            bookingHash, // ✅ Save booking hash
+            subType: 'Long Distance Moving',
+            title: `Moving from ${from} to ${to}`,
+            status: 'Inactive',
+            pickupLocation: from,
+            deliveryLocation: to,
+            pickupDate: pickupDate ? new Date(pickupDate) : new Date(),
+            deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
+            numberOfBedrooms: String(bedrooms || ''),
+            packingUnpackingServices: !!fullPacking,
+            unpacking: !!unpacking,
+            storageNeeds: !!storage,
+            chosenCarrier: {
+                carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
+                carrierId: chosenCarrier,
+                chatId: newChat._id.toString(),
+            },
+            paypalOrderId,
+        });
+
+        await newLoad.save();
+
+        return res.status(201).json({
+            message: 'Load and chat created successfully',
+            loadId: newLoad._id,
+            paypalOrderId,
+            chatId: newChat._id,
+        });
+    } catch (error) {
+        if (error.code === 11000 && error.keyPattern?.bookingHash) {
+            return res.status(200).json({ message: 'Duplicate load', alreadyExists: true });
+        }
+        console.error('[createLoadFromCookie]', error);
+        return res.status(500).json({ error: 'Internal server error' });
+    }
+};
+
+const activatePayedLoads = async () => {
+    try {
+        const pendingLoads = await Load.find({ status: 'Pending' });
+        console.log(`Found ${pendingLoads.length} loads with status "Pending":`, pendingLoads.map(l => l.loadId));
+        const result = await Load.updateMany(
+            { status: 'Pending' },
+            { $set: { status: 'Active' } }
+        );
+        console.log(`Modified count: ${result.modifiedCount}`);
+        if (result.modifiedCount > 0) {
+            console.log(`Activated ${result.modifiedCount} loads.`);
+        } else {
+            console.log('No loads were activated.');
+        }
+    } catch (error) {
+        console.error('Error activating pending loads:', error);
     }
 };
 
 module.exports = {
     createLoad,
+    createBidPaymentSession,
     makeBid,
     payLoad,
     applyBid,
@@ -353,6 +576,9 @@ module.exports = {
     getAllLoadsForCarriers,
     getLoadById,
     deleteLoadById,
+    createLoadFromCookie,
     updateLoadStatus,
-    assignDriver
+    assignDriver,
+    confirmPayment,
+    activatePayedLoads
 };

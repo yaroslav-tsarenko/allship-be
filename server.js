@@ -19,6 +19,7 @@ const port = process.env.PORT || 5000;
 const fileUpload = require("express-fileupload");
 const path = require("path");
 const {fillCarrierReviews, fillCarrierAbouts, autoBidForAllLoads} = require("./controllers/user.controller");
+const {activatePayedLoads} = require("./controllers/load.controller.js");
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
@@ -47,7 +48,6 @@ app.use(cors({
   },
   credentials: true,
 }));
-
 
 /*const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -99,6 +99,10 @@ wss.on('connection', (ws) => {
       console.error('Chat not found for chatId:', chatId);
     }
   });
+});
+
+cron.schedule('*/2 * * * *', async () => {
+  await activatePayedLoads()
 });
 
 cron.schedule('*/1 * * * *', async () => {

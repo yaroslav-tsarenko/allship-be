@@ -19,4 +19,4 @@ function client() {
     return new paypal.core.PayPalHttpClient(environment());
 }
 
-module.exports = { client };
+module.exports = { client, paypal };

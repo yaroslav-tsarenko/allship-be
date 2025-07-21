@@ -28,6 +28,7 @@ const LoadSchema = new mongoose.Schema({
         carrierId: { type: String },
         carrierCompanyName: { type: String },
         bidPrice: { type: String },
+        aiMadeBid: { type: Boolean, default: false, required: false },
         letter: { type: String },
         estimatedDeliveryTime: { type: String },
         createdAt: { type: Date, default: Date.now },
@@ -165,6 +166,11 @@ const LoadSchema = new mongoose.Schema({
         stopTime: { type: String }
     }],
     createdAt: { type: Date, default: Date.now },
+    bookingHash: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Load', LoadSchema);
