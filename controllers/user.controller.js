@@ -970,7 +970,7 @@ ${companyName}
 
 const findMatchedCarriers = async (req, res) => {
     const formData = req.body;
-
+    const storageAmount = Number(formData.storageAmount) || 0;
     const calculateAverageRating = reviews => {
         if (!reviews?.length) return 0;
         const sum = reviews.reduce((a, r) => a + (r.rate || 0), 0);
@@ -1027,13 +1027,13 @@ const findMatchedCarriers = async (req, res) => {
 
             const packingCharge = formData.fullPacking ? c.carrierServiceCosts.packingCost : 0;
             const unpackingCharge = formData.unpacking ? c.carrierServiceCosts.unpackingCost : 0;
-            const storageCharge = formData.storage ? c.carrierServiceCosts.storageCost : 0;
+            // Multiply storage cost by storageAmount if storage is selected
+            const storageCharge = formData.storage ? (c.carrierServiceCosts.storageCost * (storageAmount || 1)) : 0;
 
             const totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
 
             const pastOrders = c.pastOrders || Math.floor(Math.random() * 70) + 30;
 
-            // Simple description algorithm
             const description = `${c.companyName} rated ${entry.avgRating}/5, serves ${c.state}, est. ${distance}mi, total ~$${totalPrice}.`;
 
             return {
