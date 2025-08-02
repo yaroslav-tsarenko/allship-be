@@ -29,25 +29,7 @@ app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatar
 
 app.use(helmet());
 
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://allship.ai",
-  "https://www.allship.ai",
-  "https://dashboard.allship.ai",
-  "https://www.dashboard.allship.ai"
-];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-}));
+app.use(cors());
 
 /*const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
