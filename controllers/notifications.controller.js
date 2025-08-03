@@ -4,22 +4,14 @@ const sendEmailLanding = require("../utils/sendEmailLanding");
 const TELEGRAM_BOT_TOKEN = '8487435567:AAF6dg6W22jSMt3B3rIExvcUwDiBponeRj8';
 const TELEGRAM_CHAT_ID = '@landingua_notifications';
 
-const dealMessages = {
-    siteDevelopment: 'Замовлення на розробку сайту!',
-    seoAudit: 'Замовлення на SEO-аудит!',
-    seoPromotion: 'Замовлення на SEO-просування!',
-    socialMediaMarketing: 'Замовлення на SMM-просування!',
-    emailMarketing: 'Замовлення на Email-маркетинг!',
-    contentMarketing: 'Замовлення на контент-маркетинг!',
-};
-
 exports.notify = async (req, res) => {
     const { fullName, phone, typeOfDeal, source } = req.body;
     if (!fullName || !phone || !typeOfDeal || !source) {
         return res.status(400).json({ status: 'error', message: 'Missing required fields' });
     }
-    const dealType = typeOfDeal.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
-    const dealMessage = dealMessages[dealType] || 'Новий лід!';
+
+    const dealMessage = typeOfDeal;
+    const dealType = typeOfDeal;
 
     const lines = [`*${dealMessage}*`];
     if (fullName) lines.push(`*Ім'я:*  ${fullName}`);
@@ -54,7 +46,7 @@ exports.notify = async (req, res) => {
     }
 
     try {
-        await sendEmailLanding('yaroslav7v@gmail.com', 'Повідомлення про отримання нового ліда!', emailMessage, true); // true for HTML
+        await sendEmailLanding('yaroslav7v@gmail.com', 'Повідомлення про отримання нового ліда!', emailMessage, true);
     } catch (err) {
         console.error('Email error:', err.message);
     }
