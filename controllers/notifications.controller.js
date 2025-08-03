@@ -5,7 +5,6 @@ const TELEGRAM_BOT_TOKEN = '8487435567:AAF6dg6W22jSMt3B3rIExvcUwDiBponeRj8';
 const TELEGRAM_CHAT_ID = '@landingua_notifications';
 
 exports.notify = async (req, res) => {
-    const { fullName } = req.params;
     let data = req.body;
 
     if (typeof data === 'string') {
@@ -16,31 +15,32 @@ exports.notify = async (req, res) => {
         }
     }
 
-    const { phoneNumber, typeOfDeal, source } = data;
+    const { fullName, phone, typeOfDeal, source } = data;
 
-    if (!fullName || !typeOfDeal || !source) {
-        return res.status(400).json({ status: 'error', message: 'Missing required fields' });
+    if (!typeOfDeal || !source) {
+        return res.status(400).json({ status: 'error', message: 'Missing required fields: typeOfDeal and source' });
     }
 
-    const lines = [`*${typeOfDeal}*`, `*Ім'я:* ${fullName}`];
-    if (phoneNumber) lines.push(`*Номер телефону:* ${phoneNumber}`);
+    const lines = [`*${typeOfDeal}*`];
+    if (fullName) lines.push(`*Ім'я:* ${fullName}`);
+    if (phone) lines.push(`*Номер телефону:* ${phone}`);
     lines.push(`*Тип замовлення:* ${typeOfDeal}`);
     lines.push(`*Джерело:* ${source}`);
 
     const telegramMessage = lines.join('\n');
 
     const emailTableRows = [
-        `<tr><td style="font-weight: bold; padding-right: 10px;">Ім'я:</td><td style="font-weight: bold;">${fullName}</td></tr>`,
-        phoneNumber ? `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phoneNumber}</td></tr>` : '',
+        fullName ? `<tr><td style="font-weight: bold; padding-right: 10px;">Ім'я:</td><td style="font-weight: bold;">${fullName}</td></tr>` : '',
+        phone ? `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phone}</td></tr>` : '',
         `<tr><td style="font-weight: bold; padding-right: 10px;">Тип замовлення:</td><td style="font-weight: bold;">${typeOfDeal}</td></tr>`,
         `<tr><td style="font-weight: bold; padding-right: 10px;">Джерело:</td><td style="font-weight: bold;">${source}</td></tr>`
     ];
 
     const emailMessage = `
-    <div style="font-family: Arial, sans-serif; font-size: 16px;">
-        <h2 style="margin-bottom: 16px;">${typeOfDeal}</h2>
-        <table>${emailTableRows.join('')}</table>
-    </div>
+        <div style="font-family: Arial, sans-serif; font-size: 16px;">
+            <h2 style="margin-bottom: 16px;">${typeOfDeal}</h2>
+            <table>${emailTableRows.join('')}</table>
+        </div>
     `;
 
     try {
