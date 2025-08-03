@@ -1,32 +1,60 @@
 const axios = require('axios');
-const sendEmail = require('../utils/sendEmail');
+const sendEmailLanding = require("../utils/sendEmailLanding");
 
 const TELEGRAM_BOT_TOKEN = '8487435567:AAF6dg6W22jSMt3B3rIExvcUwDiBponeRj8';
 const TELEGRAM_CHAT_ID = '@landingua_notifications';
 
 const dealMessages = {
-    siteDevelopment: 'New lead for Site Development!',
-    seoAudit: 'New lead for SEO Audit!',
+    siteDevelopment: 'Замовлення на розробку сайту!',
+    seoAudit: 'Замовлення на SEO-аудит!',
+    seoPromotion: 'Замовлення на SEO-просування!',
+    socialMediaMarketing: 'Замовлення на SMM-просування!',
+    emailMarketing: 'Замовлення на Email-маркетинг!',
+    contentMarketing: 'Замовлення на контент-маркетинг!',
 };
 
 exports.notify = async (req, res) => {
-    const { fullName, phone, typeOfDeal, source } = req.params;
+    const { fullName, phone, typeOfDeal, source } = req.body;
+    if (!fullName || !phone || !typeOfDeal || !source) {
+        return res.status(400).json({ status: 'error', message: 'Missing required fields' });
+    }
     const dealType = typeOfDeal.replace(/-([a-z])/g, (g) => g[1].toUpperCase());
-    const dealMessage = dealMessages[dealType] || 'New lead!';
+    const dealMessage = dealMessages[dealType] || 'Новий лід!';
 
-    const message = `${dealMessage}\nName: ${fullName}\nPhone: ${phone}\nType: ${dealType}\nSource: ${source}`;
+    const lines = [`*${dealMessage}*`];
+    if (fullName) lines.push(`*Ім'я:*  ${fullName}`);
+    if (phone) lines.push(`*Номер телефону:*  ${phone}`);
+    if (dealType) lines.push(`*Тип замовлення:*  ${dealType}`);
+    if (source) lines.push(`*Джерело:*  ${source}`);
+    const telegramMessage = lines.join('\n');
+
+    const rows = [];
+    if (fullName) rows.push(`<tr><td style="font-weight: bold; padding-right: 10px;">Ім'я:</td><td style="font-weight: bold;">${fullName}</td></tr>`);
+    if (phone) rows.push(`<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phone}</td></tr>`);
+    if (dealType) rows.push(`<tr><td style="font-weight: bold; padding-right: 10px;">Тип замовлення:</td><td style="font-weight: bold;">${dealType}</td></tr>`);
+    if (source) rows.push(`<tr><td style="font-weight: bold; padding-right: 10px;">Джерело:</td><td style="font-weight: bold;">${source}</td></tr>`);
+
+    const emailMessage = `
+    <div style="font-family: Arial, sans-serif; font-size: 16px;">
+        <h2 style="margin-bottom: 16px;">${dealMessage}</h2>
+        <table>
+            ${rows.join('')}
+        </table>
+    </div>
+`;
 
     try {
         await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             chat_id: TELEGRAM_CHAT_ID,
-            text: message
+            text: telegramMessage,
+            parse_mode: "Markdown"
         });
     } catch (err) {
         console.error('Telegram error:', err.response?.data || err.message);
     }
 
     try {
-        await sendEmail('yaroslav7v@gmail.com', 'New Lead Notification', message);
+        await sendEmailLanding('yaroslav7v@gmail.com', 'Повідомлення про отримання нового ліда!', emailMessage, true); // true for HTML
     } catch (err) {
         console.error('Email error:', err.message);
     }
