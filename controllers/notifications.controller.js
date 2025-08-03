@@ -15,7 +15,12 @@ exports.notify = async (req, res) => {
         }
     }
 
-    const { fullName, phone, typeOfDeal, source } = data;
+    // 🟢 Отримуємо з body
+    const { typeOfDeal, source } = data;
+
+    // 🟢 Отримуємо з headers
+    const fullName = req.headers['fullname'] || '';
+    const phone = req.headers['phone'] || '';
 
     if (!typeOfDeal || !source) {
         return res.status(400).json({ status: 'error', message: 'Missing required fields: typeOfDeal and source' });
