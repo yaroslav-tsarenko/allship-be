@@ -5,7 +5,7 @@ const TELEGRAM_BOT_TOKEN = '8487435567:AAF6dg6W22jSMt3B3rIExvcUwDiBponeRj8';
 const TELEGRAM_CHAT_ID = '@landingua_notifications';
 
 exports.notify = async (req, res) => {
-    const { fullName, phoneNumber } = req.params;
+    const { fullName } = req.params;
     let data = req.body;
 
     if (typeof data === 'string') {
@@ -16,15 +16,14 @@ exports.notify = async (req, res) => {
         }
     }
 
-    const { typeOfDeal, source } = data;
+    const { phoneNumber, typeOfDeal, source } = data;
 
-    if (!fullName || !phoneNumber || !typeOfDeal || !source) {
+    if (!fullName || !typeOfDeal || !source) {
         return res.status(400).json({ status: 'error', message: 'Missing required fields' });
     }
 
-    const lines = [`*${typeOfDeal}*`];
-    lines.push(`*Ім'я:* ${fullName}`);
-    lines.push(`*Номер телефону:* ${phoneNumber}`);
+    const lines = [`*${typeOfDeal}*`, `*Ім'я:* ${fullName}`];
+    if (phoneNumber) lines.push(`*Номер телефону:* ${phoneNumber}`);
     lines.push(`*Тип замовлення:* ${typeOfDeal}`);
     lines.push(`*Джерело:* ${source}`);
 
@@ -32,7 +31,7 @@ exports.notify = async (req, res) => {
 
     const emailTableRows = [
         `<tr><td style="font-weight: bold; padding-right: 10px;">Ім'я:</td><td style="font-weight: bold;">${fullName}</td></tr>`,
-        `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phoneNumber}</td></tr>`,
+        phoneNumber ? `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phoneNumber}</td></tr>` : '',
         `<tr><td style="font-weight: bold; padding-right: 10px;">Тип замовлення:</td><td style="font-weight: bold;">${typeOfDeal}</td></tr>`,
         `<tr><td style="font-weight: bold; padding-right: 10px;">Джерело:</td><td style="font-weight: bold;">${source}</td></tr>`
     ];
