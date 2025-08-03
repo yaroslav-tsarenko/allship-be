@@ -5,34 +5,34 @@ const TELEGRAM_BOT_TOKEN = '8487435567:AAF6dg6W22jSMt3B3rIExvcUwDiBponeRj8';
 const TELEGRAM_CHAT_ID = '@landingua_notifications';
 
 exports.notify = async (req, res) => {
+    const { fullName, phoneNumber } = req.params;
     let data = req.body;
 
-    // 👇 Якщо тіло — це строка (а не об'єкт), спробуємо розпарсити
-    if (typeof req.body === 'string') {
+    if (typeof data === 'string') {
         try {
-            data = JSON.parse(req.body);
+            data = JSON.parse(data);
         } catch (e) {
             return res.status(400).json({ status: 'error', message: 'Invalid JSON format' });
         }
     }
 
-    const { fullName, phone, typeOfDeal, source } = data;
+    const { typeOfDeal, source } = data;
 
-    if (!fullName || !phone || !typeOfDeal || !source) {
+    if (!fullName || !phoneNumber || !typeOfDeal || !source) {
         return res.status(400).json({ status: 'error', message: 'Missing required fields' });
     }
 
     const lines = [`*${typeOfDeal}*`];
-    if (fullName) lines.push(`*Ім'я:* ${fullName}`);
-    if (phone) lines.push(`*Номер телефону:* ${phone}`);
-    if (typeOfDeal) lines.push(`*Тип замовлення:* ${typeOfDeal}`);
-    if (source) lines.push(`*Джерело:* ${source}`);
+    lines.push(`*Ім'я:* ${fullName}`);
+    lines.push(`*Номер телефону:* ${phoneNumber}`);
+    lines.push(`*Тип замовлення:* ${typeOfDeal}`);
+    lines.push(`*Джерело:* ${source}`);
 
     const telegramMessage = lines.join('\n');
 
     const emailTableRows = [
         `<tr><td style="font-weight: bold; padding-right: 10px;">Ім'я:</td><td style="font-weight: bold;">${fullName}</td></tr>`,
-        `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phone}</td></tr>`,
+        `<tr><td style="font-weight: bold; padding-right: 10px;">Номер телефону:</td><td style="font-weight: bold;">${phoneNumber}</td></tr>`,
         `<tr><td style="font-weight: bold; padding-right: 10px;">Тип замовлення:</td><td style="font-weight: bold;">${typeOfDeal}</td></tr>`,
         `<tr><td style="font-weight: bold; padding-right: 10px;">Джерело:</td><td style="font-weight: bold;">${source}</td></tr>`
     ];
@@ -40,9 +40,7 @@ exports.notify = async (req, res) => {
     const emailMessage = `
     <div style="font-family: Arial, sans-serif; font-size: 16px;">
         <h2 style="margin-bottom: 16px;">${typeOfDeal}</h2>
-        <table>
-            ${emailTableRows.join('')}
-        </table>
+        <table>${emailTableRows.join('')}</table>
     </div>
     `;
 
