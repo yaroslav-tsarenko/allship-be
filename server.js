@@ -13,6 +13,7 @@ const userRoutes = require('./routes/user.route');
 const aiRoutes = require('./routes/ai.route');
 const loadRoutes = require('./routes/load.route');
 const chatRoutes = require('./routes/chat.route');
+const notificationsRoute = require('./routes/notifications.route');
 const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 5000;
@@ -21,7 +22,7 @@ const path = require("path");
 const {fillCarrierReviews, fillCarrierAbouts, autoBidForAllLoads} = require("./controllers/user.controller");
 const {activatePayedLoads} = require("./controllers/load.controller.js");
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({extended: true}));
 app.use(fileUpload());
 app.use(express.json());
 app.use(bodyParser.json());
@@ -30,29 +31,30 @@ app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatar
 app.use(helmet());
 
 const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://allship.ai",
-  "https://www.allship.ai",
-  "https://dashboard.allship.ai",
-  "https://www.dashboard.allship.ai"
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://allship.ai",
+    "https://www.allship.ai",
+    "https://dashboard.allship.ai",
+    "https://www.dashboard.allship.ai",
+    "*"
 ];
 
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  }
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+    }
 
-  // Handle preflight requests
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
+    // Handle preflight requests
+    if (req.method === "OPTIONS") {
+        return res.sendStatus(200);
+    }
 
-  next();
+    next();
 });
 
 /*const limiter = rateLimit({
@@ -62,59 +64,59 @@ app.use((req, res, next) => {
 
 app.use(limiter);*/
 
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({server});
 
 mongoose.connect("mongodb+srv://yaroslavtsarenko:qlKClTLv1d7rUCOR@allshipai-db.zrjqe.mongodb.net/?retryWrites=true&w=majority&appName=allshipai-db", {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
 }).then(() => {
-  console.log('MongoDB connected✅ ');
+    console.log('MongoDB connected✅ ');
 }).catch(err => console.log(err));
 
 app.get('/', (req, res) => {
-  res.send('Server is live!');
+    res.send('Server is live!');
 });
 
 wss.on('connection', (ws) => {
-  ws.on('message', async (message) => {
-    const parsedMessage = JSON.parse(message);
-    const { chatId, carrierId, shipperId, messageText } = parsedMessage;
+    ws.on('message', async (message) => {
+        const parsedMessage = JSON.parse(message);
+        const {chatId, carrierId, shipperId, messageText} = parsedMessage;
 
-    if (!mongoose.Types.ObjectId.isValid(chatId)) {
-      console.error('Invalid chatId:', chatId);
-      return;
-    }
-
-    const chat = await Chat.findById(chatId);
-    if (chat) {
-      const newMessage = {
-        carrierId,
-        shipperId,
-        message: messageText,
-        createdAt: new Date(),
-      };
-      chat.chatHistory.push(newMessage);
-      await chat.save();
-
-      wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(newMessage));
+        if (!mongoose.Types.ObjectId.isValid(chatId)) {
+            console.error('Invalid chatId:', chatId);
+            return;
         }
-      });
-    } else {
-      console.error('Chat not found for chatId:', chatId);
-    }
-  });
+
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+            const newMessage = {
+                carrierId,
+                shipperId,
+                message: messageText,
+                createdAt: new Date(),
+            };
+            chat.chatHistory.push(newMessage);
+            await chat.save();
+
+            wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify(newMessage));
+                }
+            });
+        } else {
+            console.error('Chat not found for chatId:', chatId);
+        }
+    });
 });
 
 cron.schedule('*/2 * * * *', async () => {
-  await activatePayedLoads()
+    await activatePayedLoads()
 });
 
 cron.schedule('*/1 * * * *', async () => {
-  await fillCarrierReviews();
-  await fillCarrierAbouts();
-  await autoBidForAllLoads();
+    await fillCarrierReviews();
+    await fillCarrierAbouts();
+    await autoBidForAllLoads();
 });
 
 app.use('/auth', authRoutes);
@@ -122,7 +124,8 @@ app.use('/user', userRoutes);
 app.use('/ai', aiRoutes);
 app.use('/load', loadRoutes);
 app.use('/chat', chatRoutes);
+app.use('/notifications', notificationsRoute);
 
 server.listen(port, () => {
-  console.log(`Server running on port ${port}✅ `);
+    console.log(`Server running on port ${port}✅ `);
 });
