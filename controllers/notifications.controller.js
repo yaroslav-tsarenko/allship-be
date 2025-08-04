@@ -59,7 +59,7 @@ exports.notify = async (req, res) => {
     }
 
     try {
-        await sendEmailLanding('yaroslav7v@gmail.com', 'Повідомлення про отримання нового ліда!', emailMessage, true);
+        await sendEmailLanding('mail@landing.ua', 'Повідомлення про отримання нового ліда!', emailMessage, true);
     } catch (err) {
         console.error('Email error:', err.message);
     }
