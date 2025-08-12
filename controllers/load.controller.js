@@ -13,6 +13,7 @@ const {client, paypal} = require('../utils/payPalClient');
 
 const {v4: uuidv4} = require('uuid');
 const UserModel = require("../models/User");
+const {squareClient} = require("../utils/squareClient");
 
 const generateLoadId = async () => {
     const prefix = '49-0013';
@@ -203,6 +204,48 @@ const updateLoadStatus = async (req, res) => {
     }
 };
 
+async function confirmPayment(req, res) {
+    try {
+        const { userId, loadPaymentId, orderId } = req.body;
+        if (!userId || !loadPaymentId || !orderId) {
+            return res.status(400).json({ message: 'Missing userId, loadPaymentId or orderId' });
+        }
+
+        const load = await Load.findOne({ loadId: loadPaymentId });
+        if (!load) return res.status(404).json({ message: 'Load not found' });
+
+        const orderResp = await squareClient.ordersApi.retrieveOrder(orderId);
+        const state = orderResp.result?.order?.state;
+        if (state !== 'COMPLETED') {
+            return res.status(400).json({ message: 'Order not completed' });
+        }
+
+        await TransactionModel.create({
+            purpose: `Payment for load ${load._id}`,
+            amount: load.price || '100',
+            type: 'payment',
+            userId,
+        });
+
+        load.status = 'Payed';
+        await load.save();
+
+        const user = await UserModel.findById(userId);
+        if (user && user.email) {
+            await sendEmail(
+                user.email,
+                'Payment Confirmation',
+                `Your payment for load ${load._id} was successful.`
+            );
+        }
+
+        return res.json({ message: 'Payment confirmed, transaction created, status updated.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Server error' });
+    }
+}
+
 const createBidPaymentSession = async (req, res) => {
     try {
         const { loadId, carrierId, companyName, bidPrice, shipperName, shipperId } = req.body;
@@ -265,45 +308,6 @@ const deleteLoadById = async (req, res) => {
     } catch (error) {
         console.error('Error deleting load by ID:', error);
         res.status(500).json({message: 'Error deleting load by ID', error});
-    }
-};
-
-const confirmPayment = async (req, res) => {
-    try {
-        const {userId, loadPaymentId} = req.body;
-        if (!userId || !loadPaymentId) {
-            return res.status(400).json({message: 'Missing userId or loadPaymentId'});
-        }
-
-        const load = await Load.findOne({loadId: loadPaymentId});
-        if (!load) {
-            return res.status(404).json({message: 'Load not found'});
-        }
-
-        await TransactionModel.create({
-            purpose: `Payment for load ${load._id}`,
-            amount: load.price || '100',
-            type: 'payment',
-            userId,
-        });
-
-        load.status = 'Payed';
-        await load.save();
-
-        const user = await UserModel.findById(userId);
-        if (user && user.email) {
-            await sendEmail(
-                user.email,
-                'Payment Confirmation',
-                `Your payment for load ${load._id} was successful.`
-            );
-        }
-
-        res.json({message: 'Payment confirmed, transaction created, status updated.'});
-
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({message: 'Server error'});
     }
 };
 
@@ -418,33 +422,71 @@ const assignDriver = async (req, res) => {
     }
 };
 
-const payLoad = async (req, res) => {
+async function getLocationId() {
+    if (process.env.SQUARE_LOCATION_ID) return process.env.SQUARE_LOCATION_ID;
+    const resp = await squareClient.locationsApi.listLocations();
+    const locations = resp?.result?.locations || [];
+    const active = locations.find(l => l.status === 'ACTIVE');
+    if (!active?.id) throw new Error('NO_ACTIVE_LOCATION');
+    return active.id;
+}
+
+async function payLoad(req, res) {
     try {
+        const { loadId } = req.body;
         const FRONTEND_URL = process.env.DASHBOARD_URL;
-        const request = new paypal.orders.OrdersCreateRequest();
-        request.prefer('return=representation');
-        request.requestBody({
-            intent: 'CAPTURE',
-            purchase_units: [{
-                amount: {
-                    currency_code: 'USD',
-                    value: '100.00'
-                }
-            }],
-            application_context: {
-                return_url: `${FRONTEND_URL}/load-payed`,
-                cancel_url: `${FRONTEND_URL}/`
+
+        if (!loadId) return res.status(400).json({ error: 'MISSING_LOAD_ID' });
+        if (!process.env.SQUARE_ACCESS_TOKEN) return res.status(500).json({ error: 'MISSING_SQUARE_ACCESS_TOKEN' });
+        if (!FRONTEND_URL) return res.status(500).json({ error: 'MISSING_DASHBOARD_URL' });
+
+        const load = await Load.findOne({ loadId });
+        if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
+
+        let locationId;
+        try {
+            locationId = await getLocationId();
+        } catch (e) {
+            if (String(e.message) === 'NO_ACTIVE_LOCATION') {
+                return res.status(500).json({ error: 'NO_ACTIVE_SQUARE_LOCATION' });
             }
+            throw e;
+        }
+
+        const amountCents = Math.max(1, Math.round(Number(load.price || 100) * 100));
+
+        // ПРОЩЕ: создаём ссылку через quickPay
+        const { result } = await squareClient.checkoutApi.createPaymentLink({
+            idempotencyKey: uuidv4(),
+            description: `Payment for load ${load._id}`,
+            checkoutOptions: {
+                redirectUrl: `${FRONTEND_URL}/load-payed`,
+            },
+            quickPay: {
+                name: `Load ${load._id}`,
+                priceMoney: { amount: amountCents, currency: 'USD' },
+                locationId,
+                // optional: note, referenceId: String(loadId)
+                referenceId: String(loadId),
+            },
         });
 
-        const order = await client().execute(request);
-        const approvalUrl = order.result.links.find(link => link.rel === 'approve').href;
-        res.status(200).json({approvalUrl, orderId: order.result.id});
-    } catch (error) {
-        console.error('PayPal session error:', error);
-        res.status(500).json({error: 'Failed to create PayPal session'});
+        const approvalUrl = result?.paymentLink?.url;
+        const orderId = result?.paymentLink?.orderId;
+
+        if (!approvalUrl || !orderId) {
+            return res.status(500).json({ error: 'LINK_NOT_CREATED', details: result || null });
+        }
+
+        return res.status(200).json({ approvalUrl, orderId, loadId });
+    } catch (err) {
+        const status = err?.statusCode || 500;
+        const details = err?.result || err?.body || err?.errors || err?.message || err;
+        console.error('Square create link error (status):', status);
+        try { console.error('Square error (json):', JSON.stringify(details, null, 2)); } catch (_) { console.error('Square error (raw):', details); }
+        return res.status(status).json({ error: 'SQUARE_ERROR', details });
     }
-};
+}
 
 const createLoadFromCookie = async (req, res) => {
     try {
@@ -470,13 +512,11 @@ const createLoadFromCookie = async (req, res) => {
             chosenCarrier,
         } = parsed;
 
-        // ✅ Create a stable booking hash
         const bookingHash = crypto
             .createHash('sha256')
             .update(JSON.stringify(parsed))
             .digest('hex');
 
-        // ✅ Check if load already exists
         const existingLoad = await Load.findOne({ bookingHash });
         if (existingLoad) {
             return res.status(200).json({
@@ -486,7 +526,6 @@ const createLoadFromCookie = async (req, res) => {
             });
         }
 
-        // ✅ Generate other data
         const paypalOrderId = `paypal_${uuidv4()}`;
         const carrier = await User.findById(chosenCarrier);
         const shipper = await User.findById(userId);
@@ -510,7 +549,7 @@ const createLoadFromCookie = async (req, res) => {
             userId,
             email,
             loadId,
-            bookingHash, // ✅ Save booking hash
+            bookingHash,
             subType: 'Long Distance Moving',
             title: `Moving from ${from} to ${to}`,
             status: 'Inactive',
