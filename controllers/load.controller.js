@@ -204,47 +204,6 @@ const updateLoadStatus = async (req, res) => {
     }
 };
 
-async function confirmPayment(req, res) {
-    try {
-        const { userId, loadPaymentId, orderId } = req.body;
-        if (!userId || !loadPaymentId || !orderId) {
-            return res.status(400).json({ message: 'Missing userId, loadPaymentId or orderId' });
-        }
-
-        const load = await Load.findOne({ loadId: loadPaymentId });
-        if (!load) return res.status(404).json({ message: 'Load not found' });
-
-        const orderResp = await squareClient.ordersApi.retrieveOrder(orderId);
-        const state = orderResp.result?.order?.state;
-        if (state !== 'COMPLETED') {
-            return res.status(400).json({ message: 'Order not completed' });
-        }
-
-        await TransactionModel.create({
-            purpose: `Payment for load ${load._id}`,
-            amount: load.price || '100',
-            type: 'payment',
-            userId,
-        });
-
-        load.status = 'Payed';
-        await load.save();
-
-        const user = await UserModel.findById(userId);
-        if (user && user.email) {
-            await sendEmail(
-                user.email,
-                'Payment Confirmation',
-                `Your payment for load ${load._id} was successful.`
-            );
-        }
-
-        return res.json({ message: 'Payment confirmed, transaction created, status updated.' });
-    } catch (err) {
-        console.error(err);
-        return res.status(500).json({ message: 'Server error' });
-    }
-}
 
 const createBidPaymentSession = async (req, res) => {
     try {
@@ -294,6 +253,13 @@ const getLoadById = async (req, res) => {
         res.status(500).json({message: 'Error fetching load by ID', error});
     }
 };
+
+function buildRedirectUrl(req, loadId) {
+    const origin = (req.headers.origin || '').replace(/\/$/, '');
+    const isHttps = /^https:\/\//i.test(origin);
+    const base = isHttps ? origin : (process.env.DASHBOARD_URL || 'https://allship.ai');
+    return `${base.replace(/\/$/, '')}/load-payed?lid=${encodeURIComponent(loadId)}`;
+}
 
 const deleteLoadById = async (req, res) => {
     try {
@@ -424,21 +390,33 @@ const assignDriver = async (req, res) => {
 
 async function getLocationId() {
     if (process.env.SQUARE_LOCATION_ID) return process.env.SQUARE_LOCATION_ID;
-    const resp = await squareClient.locationsApi.listLocations();
-    const locations = resp?.result?.locations || [];
-    const active = locations.find(l => l.status === 'ACTIVE');
-    if (!active?.id) throw new Error('NO_ACTIVE_LOCATION');
-    return active.id;
+    try {
+        const resp = await squareClient.locationsApi.listLocations();
+        const loc = (resp?.result?.locations || []).find(l => l.status === 'ACTIVE');
+        if (!loc?.id) throw new Error('NO_ACTIVE_LOCATION');
+        return loc.id;
+    } catch (e) {
+        const body = e?.body || e?.result || '';
+        const looksLikeCloudflareHtml =
+            e?.statusCode === 403 &&
+            (typeof body === 'string') &&
+            /Attention Required|Cloudflare/i.test(body);
+
+        if (looksLikeCloudflareHtml) {
+            console.error('[Square] WAF/Cloudflare blocked this IP. Set SQUARE_LOCATION_ID in env or change egress IP.');
+            const err = new Error('SQUARE_WAF_BLOCKED');
+            err.code = 'SQUARE_WAF_BLOCKED';
+            throw err;
+        }
+        throw e;
+    }
 }
+
 
 async function payLoad(req, res) {
     try {
         const { loadId } = req.body;
-        const FRONTEND_URL = process.env.DASHBOARD_URL;
-
         if (!loadId) return res.status(400).json({ error: 'MISSING_LOAD_ID' });
-        if (!process.env.SQUARE_ACCESS_TOKEN) return res.status(500).json({ error: 'MISSING_SQUARE_ACCESS_TOKEN' });
-        if (!FRONTEND_URL) return res.status(500).json({ error: 'MISSING_DASHBOARD_URL' });
 
         const load = await Load.findOne({ loadId });
         if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
@@ -447,44 +425,114 @@ async function payLoad(req, res) {
         try {
             locationId = await getLocationId();
         } catch (e) {
-            if (String(e.message) === 'NO_ACTIVE_LOCATION') {
+            if (e?.code === 'SQUARE_WAF_BLOCKED') {
+                return res.status(502).json({
+                    error: 'NETWORK_BLOCKED',
+                    message: 'Square Sandbox blocked your IP (Cloudflare). Set SQUARE_LOCATION_ID in env and retry, or change network/VPN.',
+                });
+            }
+            if (String(e?.message) === 'NO_ACTIVE_LOCATION') {
                 return res.status(500).json({ error: 'NO_ACTIVE_SQUARE_LOCATION' });
             }
             throw e;
         }
 
         const amountCents = Math.max(1, Math.round(Number(load.price || 100) * 100));
+        const origin = (req.headers.origin || '').replace(/\/$/, '');
+        const isHttps = /^https:\/\//i.test(origin);
+        const base = isHttps ? origin : (process.env.DASHBOARD_URL || 'https://allship.ai');
+        const redirectUrl = `${base}/load-payed?lid=${encodeURIComponent(loadId)}`;
 
-        // ПРОЩЕ: создаём ссылку через quickPay
         const { result } = await squareClient.checkoutApi.createPaymentLink({
             idempotencyKey: uuidv4(),
-            description: `Payment for load ${load._id}`,
-            checkoutOptions: {
-                redirectUrl: `${FRONTEND_URL}/load-payed`,
-            },
+            description: `Payment for load ${load.loadId}`,
+            checkoutOptions: { redirectUrl },
             quickPay: {
-                name: `Load ${load._id}`,
-                priceMoney: { amount: amountCents, currency: 'USD' },
-                locationId,
-                // optional: note, referenceId: String(loadId)
+                name: `Load ${load.loadId}`,
+                priceMoney: { amount: BigInt(amountCents), currency: 'USD' },
                 referenceId: String(loadId),
+                locationId,
             },
         });
 
         const approvalUrl = result?.paymentLink?.url;
         const orderId = result?.paymentLink?.orderId;
-
         if (!approvalUrl || !orderId) {
             return res.status(500).json({ error: 'LINK_NOT_CREATED', details: result || null });
         }
 
+        load.squareOrderId = orderId;
+        await load.save();
+
         return res.status(200).json({ approvalUrl, orderId, loadId });
     } catch (err) {
         const status = err?.statusCode || 500;
-        const details = err?.result || err?.body || err?.errors || err?.message || err;
-        console.error('Square create link error (status):', status);
-        try { console.error('Square error (json):', JSON.stringify(details, null, 2)); } catch (_) { console.error('Square error (raw):', details); }
-        return res.status(status).json({ error: 'SQUARE_ERROR', details });
+        const body = err?.body || err?.result || err?.errors || err?.message || err;
+        const isCfHtml = typeof body === 'string' && /Attention Required|Cloudflare/i.test(body);
+        if (isCfHtml) {
+            return res.status(502).json({
+                error: 'NETWORK_BLOCKED',
+                message: 'Square Sandbox blocked your IP (Cloudflare). Use SQUARE_LOCATION_ID env and/or change network.',
+            });
+        }
+        console.error('Square create link error:', err);
+        return res.status(status).json({ error: 'SQUARE_ERROR' });
+    }
+}
+
+async function confirmPayment(req, res) {
+    try {
+        const { userId, loadPaymentId, orderId } = req.body;
+        if (!loadPaymentId || !orderId) {
+            return res.status(400).json({ message: 'Missing loadPaymentId or orderId' });
+        }
+
+        const load = await Load.findOne({ loadId: loadPaymentId });
+        if (!load) return res.status(404).json({ message: 'Load not found' });
+
+        const { result } = await squareClient.ordersApi.retrieveOrder(orderId);
+        const order = result?.order;
+        if (!order) return res.status(404).json({ message: 'Order not found' });
+
+        let paid = order.state === 'COMPLETED'; // очікуваний фінальний стан. :contentReference[oaicite:3]{index=3}
+        let paymentId = order?.tenders?.[0]?.paymentId;
+
+        // fallback: інколи в sandbox state ще OPEN → перевіряємо сам платіж
+        if (!paid && paymentId) {
+            const pay = await squareClient.paymentsApi.getPayment(paymentId);
+            if (pay?.result?.payment?.status === 'COMPLETED') {
+                paid = true;
+            }
+        }
+
+        if (!paid) {
+            return res.status(400).json({ message: 'Order not completed yet' });
+        }
+
+        await TransactionModel.create({
+            purpose: `Payment for load ${load.loadId}`,
+            amount: String(load.price || '100'),
+            type: 'payment',
+            userId: userId || load.userId,
+            meta: { orderId, paymentId },
+        });
+
+        load.status = 'Payed';
+        await load.save();
+
+        const shipper = await UserModel.findById(userId || load.userId);
+        if (shipper?.email) {
+            await sendEmail(
+                shipper.email,
+                'Payment Confirmation',
+                `Your payment for load ${load.loadId} was successful.`
+            );
+        }
+
+        return res.json({ message: 'Payment confirmed', orderState: order.state, paymentId });
+    } catch (err) {
+        console.error('[confirmPayment] error:', err);
+        return res.status(500).json({ message: 'Server error' });
     }
 }
 
@@ -526,7 +574,6 @@ const createLoadFromCookie = async (req, res) => {
             });
         }
 
-        const paypalOrderId = `paypal_${uuidv4()}`;
         const carrier = await User.findById(chosenCarrier);
         const shipper = await User.findById(userId);
         const loadId = await generateLoadId();

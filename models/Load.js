@@ -153,7 +153,6 @@ const LoadSchema = new mongoose.Schema({
     storageContainers: { type: Boolean },
     safe: { type: Boolean },
     otherMilitaryItems: { type: Boolean },
-    paypalOrderId: { type: String, unique: true },
     temporaryStorage: { type: Boolean },
     specialPacking: { type: Boolean },
     chosenCarrier: {
