@@ -389,17 +389,14 @@ const assignDriver = async (req, res) => {
 };
 
 async function getLocationId() {
-    // Ця функція тепер просто бере ID з .env
     if (process.env.SQUARE_LOCATION_ID) {
         return process.env.SQUARE_LOCATION_ID;
     } else {
-        // Якщо ID не встановлений, викидаємо помилку
         const err = new Error('SQUARE_LOCATION_ID is not set in environment variables.');
         err.code = 'MISSING_SQUARE_LOCATION_ID';
         throw err;
     }
 }
-
 
 async function payLoad(req, res) {
     try {
@@ -424,7 +421,8 @@ async function payLoad(req, res) {
             throw e;
         }
 
-        const amountCents = Math.max(1, Math.round(Number(load.price || 100) * 100));
+
+        const amountCents = Math.max(1, Math.round(Number(load.totalLoadPrice || 100) * 100));
         const origin = (req.headers.origin || '').replace(/\/$/, '');
         const isHttps = /^https:\/\//i.test(origin);
         const base = isHttps ? origin : (process.env.DASHBOARD_URL || 'https://allship.ai');
