@@ -146,6 +146,7 @@ const LoadSchema = new mongoose.Schema({
     washerDryer: { type: Boolean },
     microwave: { type: Boolean },
     dishwasher: { type: Boolean },
+    totalLoadPrice: { type: String },
     oven: { type: Boolean },
     otherAppliances: { type: Boolean },
     uniformsGear: { type: Boolean },

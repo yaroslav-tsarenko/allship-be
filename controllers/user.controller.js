@@ -404,195 +404,6 @@ const generateLoadId = async () => {
     return loadId;
 };
 
-const handlePayPalPaymentSuccess = async (req, res) => {
-    try {
-        const { orderId, data } = req.body;
-
-        if (!orderId || !data || !data.userId) {
-            return res.status(400).json({ error: 'Missing orderId or userId in request.' });
-        }
-
-        const alreadyExists = await Load.findOne({ paypalOrderId: orderId });
-        if (alreadyExists) {
-            return res.status(200).json({
-                message: 'Load already exists.',
-                loadId: alreadyExists.loadId,
-                clearBookingData: true,
-                chosenCarrier: alreadyExists.chosenCarrier || null
-            });
-        }
-
-        const getRequest = new paypal.orders.OrdersGetRequest(orderId);
-        const order = await client.execute(getRequest);
-        let paymentStatus = order.result.status;
-
-        if (paymentStatus === 'APPROVED') {
-            try {
-                const captureRequest = new paypal.orders.OrdersCaptureRequest(orderId);
-                const capture = await client.execute(captureRequest);
-                paymentStatus = capture.result.status;
-            } catch (captureError) {
-                if (captureError.statusCode === 422 && captureError.message.includes('ORDER_ALREADY_CAPTURED')) {
-                    paymentStatus = 'COMPLETED';
-                } else {
-                    throw captureError;
-                }
-            }
-        }
-
-        if (paymentStatus !== 'COMPLETED') {
-            return res.status(400).json({ error: 'Payment not completed.' });
-        }
-
-        const user = await User.findById(data.userId);
-        if (!user) return res.status(404).json({ message: 'User not found' });
-
-        const loadId = await generateLoadId();
-        const subType = (data.moveType || 'Moving')
-            .split('-')
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-            .join(' ');
-
-        const load = new Load({
-            paypalOrderId: orderId,
-            userId: user._id,
-            email: user.email,
-            loadId,
-            type: 'Moving',
-            subType,
-            title: data.title || `${data.bedrooms || ''} Bedroom Move`,
-            status: 'Payed',
-            pickupLocation: data.from,
-            deliveryLocation: data.to,
-            pickupDate: data.pickupDate ? new Date(data.pickupDate) : undefined,
-            deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : undefined,
-            numberOfBedrooms: String(data.bedrooms || ''),
-            totalSquareFootage: String(data.volume || ''),
-            packingUnpackingServices: !!(data.fullPacking || data.halfPacking || data.quarterPacking),
-            storageNeeds: !!data.storage,
-            needExtraMovingSupplies: false,
-            furnitureDisassemblyReassembly: false,
-            appliancesBeingMoved: [],
-            largeFurnitureItems: [],
-            specialHandlingRequired: [],
-            price: data.price,
-            images: Array.isArray(data.images) ? data.images : [],
-            bidsQuantity: 0,
-            avgPrice: 0
-        });
-
-        await load.save();
-
-        // 🧹 Clean up duplicates by PayPal Order ID
-        const allLoads = await Load.find({ paypalOrderId: orderId }).sort({ createdAt: 1 });
-        const savedLoad = allLoads[0]; // Найстарший збережений — залишаємо
-        const toDelete = allLoads.slice(1); // Інші — видаляємо
-
-        for (const dup of toDelete) {
-            await Load.findByIdAndDelete(dup._id);
-            console.log(`🗑️ Deleted duplicate load: ${dup.loadId}`);
-        }
-
-        let chosenCarrierObj = null;
-
-        // 💬 Створення чату вже від почищеного Load (savedLoad)
-        if (data.chosenCarrier) {
-            const carrier = await User.findById(data.chosenCarrier);
-            const carrierCompanyName = carrier?.companyName || '';
-
-            const chat = new Chat({
-                carrierId: data.chosenCarrier,
-                shipperId: user._id,
-                loadId: savedLoad.loadId,
-                carrierCompanyName,
-                shipperName: user.name,
-                bidPrice: data.price,
-                title: savedLoad.title,
-                subType: savedLoad.subType,
-                chatHistory: []
-            });
-
-            await chat.save();
-
-            chosenCarrierObj = {
-                carrierId: data.chosenCarrier,
-                carrierCompanyName,
-                chatId: chat._id,
-                bidPrice: data.price
-            };
-
-            await Load.updateOne(
-                { _id: savedLoad._id },
-                { $set: { chosenCarrier: chosenCarrierObj } }
-            );
-        }
-
-        await sendEmail(user.email, 'Your load is created and paid', `Load ${savedLoad.loadId} is now active.`);
-
-        await createZohoLead({
-            firstName: user.name,
-            lastName: user.secondName,
-            email: user.email,
-            company: user.companyName,
-            phone: user.phone,
-            message: `New paid load: ${savedLoad.loadId}`,
-            source: 'Website',
-            title: savedLoad.title
-        });
-
-        // 💬 Створення чату вже від почищеного Load (savedLoad)
-        if (data.chosenCarrier) {
-            const carrier = await User.findById(data.chosenCarrier);
-            const carrierCompanyName = carrier?.companyName || '';
-
-            const chat = new Chat({
-                carrierId: data.chosenCarrier,
-                shipperId: user._id,
-                loadId: savedLoad.loadId,
-                carrierCompanyName,
-                shipperName: user.name,
-                bidPrice: data.price,
-                title: savedLoad.title,
-                subType: savedLoad.subType,
-                chatHistory: []
-            });
-
-            await chat.save();
-
-            chosenCarrierObj = {
-                carrierId: data.chosenCarrier,
-                carrierCompanyName,
-                chatId: chat._id,
-                bidPrice: data.price
-            };
-
-            await Load.updateOne(
-                { _id: savedLoad._id },
-                { $set: { chosenCarrier: chosenCarrierObj } }
-            );
-
-            const duplicateChats = await Chat.find({ loadId: savedLoad.loadId }).sort({ createdAt: 1 });
-            if (duplicateChats.length > 1) {
-                const chatsToDelete = duplicateChats.slice(1);
-                for (const c of chatsToDelete) {
-                    await Chat.findByIdAndDelete(c._id);
-                    console.log(`🗑️ Deleted duplicate chat for loadId: ${savedLoad.loadId}`);
-                }
-            }
-        }
-
-
-        return res.status(200).json({
-            message: 'Payment verified and actions completed.',
-            clearBookingData: true,
-            chosenCarrier: chosenCarrierObj
-        });
-
-    } catch (err) {
-        console.error('❌ Error in handlePayPalPaymentSuccess:', err);
-        res.status(500).json({ error: 'Post-payment logic failed' });
-    }
-};
 
 
 const contactUsRequest = async (req, res) => {
@@ -968,21 +779,25 @@ ${companyName}
 };
 
 
+// controllers/user.controller.js
+
 const findMatchedCarriers = async (req, res) => {
     const formData = req.body;
     const storageAmount = Number(formData.storageAmount) || 0;
+
     const calculateAverageRating = reviews => {
         if (!reviews?.length) return 0;
         const sum = reviews.reduce((a, r) => a + (r.rate || 0), 0);
         return Math.round((sum / reviews.length) * 10) / 10;
     };
 
+    // Cap distance to max 200 miles
     const estimateDistance = (from, to) => {
-        if (!from || !to) return 50; // default
-        return Math.max(30, Math.floor(Math.random() * 200)); // random for demo
+        if (!from || !to) return 50;
+        return Math.max(30, Math.floor(Math.random() * 200));
     };
 
-    // Find correct price tier
+    // Cap mileage price to max $10/mile
     const getMileagePrice = (pricing, distance) => {
         if (!Array.isArray(pricing)) return 2;
         let price = pricing[0]?.price || 2;
@@ -992,7 +807,7 @@ const findMatchedCarriers = async (req, res) => {
                 break;
             }
         }
-        return price;
+        return Math.min(price, 10);
     };
 
     try {
@@ -1000,8 +815,8 @@ const findMatchedCarriers = async (req, res) => {
             role: 'carrier',
             $expr: {
                 $and: [
-                    {$gt: [{$size: '$reviews'}, 0]},
-                    {$gt: [{$size: '$carrierMileagePricing'}, 0]}
+                    { $gt: [ { $size: '$reviews' }, 0 ] },
+                    { $gt: [ { $size: '$carrierMileagePricing' }, 0 ] }
                 ]
             }
         });
@@ -1011,10 +826,8 @@ const findMatchedCarriers = async (req, res) => {
             const from = (formData.from || '').toLowerCase();
             const state = (c.state || '').toLowerCase();
             const inStateBonus = from && state && from.includes(state) ? 10 : 0;
-
             const score = avgRating * 5 + (parseInt(c.serviceActivity) || 0) * 3 + Math.min(c.reviews.length, 10);
-
-            return {c, score, avgRating, inStateBonus};
+            return { c, score, avgRating, inStateBonus };
         });
 
         const top = scored.sort((a, b) => b.score + b.inStateBonus - (a.score + a.inStateBonus)).slice(0, 6);
@@ -1023,14 +836,19 @@ const findMatchedCarriers = async (req, res) => {
             const c = entry.c;
             const distance = estimateDistance(formData.from, formData.to);
             const mileagePrice = getMileagePrice(c.carrierMileagePricing, distance);
-            const distanceCharge = distance * mileagePrice;
+            let distanceCharge = Math.round(distance * mileagePrice);
+
+            // Cap distanceCharge to $25,000
+            distanceCharge = Math.min(distanceCharge, 25000);
 
             const packingCharge = formData.fullPacking ? c.carrierServiceCosts.packingCost : 0;
             const unpackingCharge = formData.unpacking ? c.carrierServiceCosts.unpackingCost : 0;
-            // Multiply storage cost by storageAmount if storage is selected
             const storageCharge = formData.storage ? (c.carrierServiceCosts.storageCost * (storageAmount || 1)) : 0;
 
-            const totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
+            let totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
+
+            // Cap totalPrice to $25,000
+            totalPrice = Math.min(totalPrice, 25000);
 
             const pastOrders = c.pastOrders || Math.floor(Math.random() * 70) + 30;
 
@@ -1058,12 +876,12 @@ const findMatchedCarriers = async (req, res) => {
                 pastOrders,
                 description
             };
-        });
+        }).filter(carrier => carrier.totalPrice <= 25000);
 
-        res.json({matchedCarriers: enriched});
+        res.json({ matchedCarriers: enriched });
     } catch (err) {
         console.error(err);
-        res.status(500).json({message: 'Error', error: err.message});
+        res.status(500).json({ message: 'Error', error: err.message });
     }
 };
 
@@ -1183,7 +1001,6 @@ module.exports = {
     addDriver,
     getAllTransactions,
     getAllCards,
-    handlePayPalPaymentSuccess,
     findMatchedCarriers,
     createCarrierLoadPaymentSession,
     createHelpForm,

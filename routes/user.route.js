@@ -22,6 +22,5 @@ router.post('/contact-us-request', contactUsRequest);
 router.post('/find-matched-carriers', findMatchedCarriers);
 router.post('/add-additional-info', addCarrierAdditionalInfo);
 router.get('/create-carrier-load-payment-session', createCarrierLoadPaymentSession);
-router.post('/continue-payment-functionality', handlePayPalPaymentSuccess);
 
 module.exports = router;

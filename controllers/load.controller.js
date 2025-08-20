@@ -389,26 +389,14 @@ const assignDriver = async (req, res) => {
 };
 
 async function getLocationId() {
-    if (process.env.SQUARE_LOCATION_ID) return process.env.SQUARE_LOCATION_ID;
-    try {
-        const resp = await squareClient.locationsApi.listLocations();
-        const loc = (resp?.result?.locations || []).find(l => l.status === 'ACTIVE');
-        if (!loc?.id) throw new Error('NO_ACTIVE_LOCATION');
-        return loc.id;
-    } catch (e) {
-        const body = e?.body || e?.result || '';
-        const looksLikeCloudflareHtml =
-            e?.statusCode === 403 &&
-            (typeof body === 'string') &&
-            /Attention Required|Cloudflare/i.test(body);
-
-        if (looksLikeCloudflareHtml) {
-            console.error('[Square] WAF/Cloudflare blocked this IP. Set SQUARE_LOCATION_ID in env or change egress IP.');
-            const err = new Error('SQUARE_WAF_BLOCKED');
-            err.code = 'SQUARE_WAF_BLOCKED';
-            throw err;
-        }
-        throw e;
+    // Ця функція тепер просто бере ID з .env
+    if (process.env.SQUARE_LOCATION_ID) {
+        return process.env.SQUARE_LOCATION_ID;
+    } else {
+        // Якщо ID не встановлений, викидаємо помилку
+        const err = new Error('SQUARE_LOCATION_ID is not set in environment variables.');
+        err.code = 'MISSING_SQUARE_LOCATION_ID';
+        throw err;
     }
 }
 
@@ -423,16 +411,15 @@ async function payLoad(req, res) {
 
         let locationId;
         try {
+            // Використовуємо спрощену функцію для отримання ID
             locationId = await getLocationId();
         } catch (e) {
-            if (e?.code === 'SQUARE_WAF_BLOCKED') {
-                return res.status(502).json({
-                    error: 'NETWORK_BLOCKED',
-                    message: 'Square Sandbox blocked your IP (Cloudflare). Set SQUARE_LOCATION_ID in env and retry, or change network/VPN.',
+            // Обробляємо помилку, якщо ID не встановлений
+            if (e?.code === 'MISSING_SQUARE_LOCATION_ID') {
+                return res.status(500).json({
+                    error: e.code,
+                    message: e.message,
                 });
-            }
-            if (String(e?.message) === 'NO_ACTIVE_LOCATION') {
-                return res.status(500).json({ error: 'NO_ACTIVE_SQUARE_LOCATION' });
             }
             throw e;
         }
@@ -441,8 +428,7 @@ async function payLoad(req, res) {
         const origin = (req.headers.origin || '').replace(/\/$/, '');
         const isHttps = /^https:\/\//i.test(origin);
         const base = isHttps ? origin : (process.env.DASHBOARD_URL || 'https://allship.ai');
-        const redirectUrl = `${base}/load-payed?lid=${encodeURIComponent(loadId)}`;
-
+        const redirectUrl = `${base}/confirm-payment/${encodeURIComponent(loadId)}`;
         const { result } = await squareClient.checkoutApi.createPaymentLink({
             idempotencyKey: uuidv4(),
             description: `Payment for load ${load.loadId}`,
@@ -454,7 +440,8 @@ async function payLoad(req, res) {
                 locationId,
             },
         });
-
+        load.squareOrderId = result?.paymentLink?.orderId;
+        await load.save();
         const approvalUrl = result?.paymentLink?.url;
         const orderId = result?.paymentLink?.orderId;
         if (!approvalUrl || !orderId) {
@@ -466,73 +453,75 @@ async function payLoad(req, res) {
 
         return res.status(200).json({ approvalUrl, orderId, loadId });
     } catch (err) {
+        // Цей блок обробляє всі інші помилки
+        console.error('Square create link error:', err);
+
         const status = err?.statusCode || 500;
-        const body = err?.body || err?.result || err?.errors || err?.message || err;
-        const isCfHtml = typeof body === 'string' && /Attention Required|Cloudflare/i.test(body);
-        if (isCfHtml) {
+        let errorMessage = 'An unknown Square API error occurred.';
+        const body = err?.body || err?.result || err?.errors || err?.message;
+
+        if (typeof body === 'string' && /Attention Required|Cloudflare/i.test(body)) {
+            errorMessage = 'Network blocked by Square (Cloudflare). Use SQUARE_LOCATION_ID env or change network.';
             return res.status(502).json({
                 error: 'NETWORK_BLOCKED',
-                message: 'Square Sandbox blocked your IP (Cloudflare). Use SQUARE_LOCATION_ID env and/or change network.',
+                message: errorMessage,
             });
         }
-        console.error('Square create link error:', err);
-        return res.status(status).json({ error: 'SQUARE_ERROR' });
+
+        if (err?.errors && Array.isArray(err.errors)) {
+            errorMessage = err.errors.map(e => e.detail).join('; ');
+        } else if (err?.message) {
+            errorMessage = err.message;
+        }
+
+        return res.status(status).json({
+            error: 'SQUARE_ERROR',
+            message: errorMessage,
+            details: body,
+        });
     }
 }
 
 async function confirmPayment(req, res) {
     try {
-        const { userId, loadPaymentId, orderId } = req.body;
-        if (!loadPaymentId || !orderId) {
-            return res.status(400).json({ message: 'Missing loadPaymentId or orderId' });
+        const { loadId, squareOrderId } = req.body || {};
+        if (!loadId) return res.status(400).json({ error: 'MISSING_LOAD_ID' });
+
+        const load = await Load.findOne({ loadId });
+        if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
+        if (load.status === 'Payed') {
+            return res.status(200).json({ ok: true, already: true, message: 'Already Payed' });
         }
 
-        const load = await Load.findOne({ loadId: loadPaymentId });
-        if (!load) return res.status(404).json({ message: 'Load not found' });
+        // --- (опціональна) верифікація по Square ---
+        let isPaid = true; // за вимогою — ставимо Payed по loadId
+        const orderId = squareOrderId || load.squareOrderId;
 
-        const { result } = await squareClient.ordersApi.retrieveOrder(orderId);
-        const order = result?.order;
-        if (!order) return res.status(404).json({ message: 'Order not found' });
-
-        let paid = order.state === 'COMPLETED'; // очікуваний фінальний стан. :contentReference[oaicite:3]{index=3}
-        let paymentId = order?.tenders?.[0]?.paymentId;
-
-        // fallback: інколи в sandbox state ще OPEN → перевіряємо сам платіж
-        if (!paid && paymentId) {
-            const pay = await squareClient.paymentsApi.getPayment(paymentId);
-            if (pay?.result?.payment?.status === 'COMPLETED') {
-                paid = true;
-            }
+        // якщо хочеш перевірку — розкоментуй:
+        /*
+        if (orderId) {
+          try {
+            const { result } = await ordersApi.retrieveOrder(orderId);
+            const order = result?.order;
+            isPaid = order?.state === 'COMPLETED';
+          } catch (e) {
+            console.warn('Square verify failed, skipping:', e?.message || e);
+          }
         }
+        */
 
-        if (!paid) {
-            return res.status(400).json({ message: 'Order not completed yet' });
+        if (!isPaid) {
+            return res.status(409).json({ error: 'NOT_PAID', message: 'Order is not completed yet' });
         }
-
-        await TransactionModel.create({
-            purpose: `Payment for load ${load.loadId}`,
-            amount: String(load.price || '100'),
-            type: 'payment',
-            userId: userId || load.userId,
-            meta: { orderId, paymentId },
-        });
 
         load.status = 'Payed';
+        load.payedAt = new Date();
         await load.save();
 
-        const shipper = await UserModel.findById(userId || load.userId);
-        if (shipper?.email) {
-            await sendEmail(
-                shipper.email,
-                'Payment Confirmation',
-                `Your payment for load ${load.loadId} was successful.`
-            );
-        }
-
-        return res.json({ message: 'Payment confirmed', orderState: order.state, paymentId });
-    } catch (err) {
-        console.error('[confirmPayment] error:', err);
-        return res.status(500).json({ message: 'Server error' });
+        return res.status(200).json({ ok: true, loadId, status: load.status });
+    } catch (e) {
+        console.error('confirmPayment error:', e);
+        return res.status(500).json({ error: 'SERVER_ERROR', message: e?.message || 'Unknown error' });
     }
 }
 
@@ -558,6 +547,7 @@ const createLoadFromCookie = async (req, res) => {
             unpacking,
             storage,
             chosenCarrier,
+            totalLoadPrice
         } = parsed;
 
         const bookingHash = crypto
@@ -608,12 +598,12 @@ const createLoadFromCookie = async (req, res) => {
             packingUnpackingServices: !!fullPacking,
             unpacking: !!unpacking,
             storageNeeds: !!storage,
+            totalLoadPrice: totalLoadPrice,
             chosenCarrier: {
                 carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
                 carrierId: chosenCarrier,
                 chatId: newChat._id.toString(),
             },
-            paypalOrderId,
         });
 
         await newLoad.save();
@@ -621,7 +611,6 @@ const createLoadFromCookie = async (req, res) => {
         return res.status(201).json({
             message: 'Load and chat created successfully',
             loadId: newLoad._id,
-            paypalOrderId,
             chatId: newChat._id,
         });
     } catch (error) {
