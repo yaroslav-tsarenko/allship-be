@@ -207,9 +207,9 @@ const updateLoadStatus = async (req, res) => {
 
 const createBidPaymentSession = async (req, res) => {
     try {
-        const { loadId, carrierId, companyName, bidPrice, shipperName, shipperId } = req.body;
+        const {loadId, carrierId, companyName, bidPrice, shipperName, shipperId} = req.body;
         if (!loadId || !carrierId || !companyName || !bidPrice || !shipperName || !shipperId) {
-            return res.status(400).json({ message: 'Missing bid data' });
+            return res.status(400).json({message: 'Missing bid data'});
         }
 
         const request = new paypal.orders.OrdersCreateRequest();
@@ -231,10 +231,10 @@ const createBidPaymentSession = async (req, res) => {
         const order = await client().execute(request);
         const approvalUrl = order.result.links.find(link => link.rel === 'approve').href;
 
-        res.status(200).json({ approvalUrl, orderId: order.result.id });
+        res.status(200).json({approvalUrl, orderId: order.result.id});
     } catch (error) {
         console.error('Error creating PayPal bid session:', error);
-        res.status(500).json({ error: 'Failed to create PayPal session' });
+        res.status(500).json({error: 'Failed to create PayPal session'});
     }
 };
 
@@ -277,9 +277,9 @@ const deleteLoadById = async (req, res) => {
     }
 };
 
-const updateLoadCarrierStatus = async ({ loadId, companyName, chatId, carrierId, status }) => {
+const updateLoadCarrierStatus = async ({loadId, companyName, chatId, carrierId, status}) => {
     return await Load.findOneAndUpdate(
-        { loadId },
+        {loadId},
         {
             status,
             chosenCarrier: {
@@ -288,17 +288,17 @@ const updateLoadCarrierStatus = async ({ loadId, companyName, chatId, carrierId,
                 carrierId
             }
         },
-        { new: true }
+        {new: true}
     );
 };
 
 const removeDuplicatesChat = async (loadId) => {
-    const chats = await Chat.find({ loadId });
+    const chats = await Chat.find({loadId});
     if (chats.length > 1) {
         const sorted = chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         const [keep, ...duplicates] = sorted;
         const duplicateIds = duplicates.map(chat => chat._id);
-        await Chat.deleteMany({ _id: { $in: duplicateIds } });
+        await Chat.deleteMany({_id: {$in: duplicateIds}});
         return duplicateIds;
     }
     return [];
@@ -307,18 +307,18 @@ const removeDuplicatesChat = async (loadId) => {
 const applyBid = async (req, res) => {
     console.log("Request body for applyBid:", req.body);
     try {
-        const { loadId, carrierId, companyName, bidPrice, shipperName, shipperId } = req.body;
+        const {loadId, carrierId, companyName, bidPrice, shipperName, shipperId} = req.body;
 
         if (!loadId || !carrierId || !companyName || !bidPrice || !shipperName || !shipperId) {
-            return res.status(400).json({ message: 'Missing required fields' });
+            return res.status(400).json({message: 'Missing required fields'});
         }
 
-        const load = await Load.findOne({ loadId });
-        if (!load) return res.status(404).json({ message: 'Load not found' });
+        const load = await Load.findOne({loadId});
+        if (!load) return res.status(404).json({message: 'Load not found'});
 
         const userEmail = load.email;
         const carrier = await User.findById(carrierId);
-        if (!carrier) return res.status(404).json({ message: 'Carrier not found' });
+        if (!carrier) return res.status(404).json({message: 'Carrier not found'});
 
         const chat = await new Chat({
             carrierId,
@@ -343,7 +343,7 @@ const applyBid = async (req, res) => {
         await removeDuplicatesChat(loadId);
         if (!updatedLoad) {
             console.error('Failed to update load with bid info');
-            return res.status(500).json({ message: 'Failed to update load' });
+            return res.status(500).json({message: 'Failed to update load'});
         }
 
         await Promise.all([
@@ -351,24 +351,24 @@ const applyBid = async (req, res) => {
             sendEmail(carrier.email, "A shipper accepted your bid", "Check your chat now.")
         ]);
 
-        return res.status(200).json({ message: 'Bid applied and chat created successfully', chat });
+        return res.status(200).json({message: 'Bid applied and chat created successfully', chat});
     } catch (error) {
         console.error('Error applying bid:', error);
-        return res.status(500).json({ message: 'Internal error', error: error.message });
+        return res.status(500).json({message: 'Internal error', error: error.message});
     }
 };
 
 const assignDriver = async (req, res) => {
-    const { loadId, driverId } = req.body;
+    const {loadId, driverId} = req.body;
     console.log("Request body for assignDriver:", req.body);
     try {
-        const load = await Load.findOne({ loadId });
+        const load = await Load.findOne({loadId});
         if (!load) {
-            return res.status(404).json({ message: 'Load not found' });
+            return res.status(404).json({message: 'Load not found'});
         }
         const driver = await User.findById(driverId);
         if (!driver || driver.role !== 'driver') {
-            return res.status(404).json({ message: 'Driver not found' });
+            return res.status(404).json({message: 'Driver not found'});
         }
         load.assignedDriver = {
             driverId: driverId,
@@ -381,7 +381,7 @@ const assignDriver = async (req, res) => {
             driver.assignedLoads.push(loadId);
             await driver.save();
         }
-        res.status(200).json({ message: 'Driver assigned successfully' });
+        res.status(200).json({message: 'Driver assigned successfully'});
     } catch (error) {
         console.error('Error:', error);
         res.status(500).send('Server error');
@@ -400,44 +400,57 @@ async function getLocationId() {
 
 async function payLoad(req, res) {
     try {
-        const { loadId } = req.body;
+        const { loadId, locationId: locationIdFromBody, serviceFee: serviceFeeFromReq } = req.body;
         if (!loadId) return res.status(400).json({ error: 'MISSING_LOAD_ID' });
 
         const load = await Load.findOne({ loadId });
         if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
 
-        let locationId;
-        try {
-            // Використовуємо спрощену функцію для отримання ID
-            locationId = await getLocationId();
-        } catch (e) {
-            // Обробляємо помилку, якщо ID не встановлений
-            if (e?.code === 'MISSING_SQUARE_LOCATION_ID') {
-                return res.status(500).json({
-                    error: e.code,
-                    message: e.message,
-                });
+        let locationId = locationIdFromBody;
+        if (!locationId) {
+            try {
+                locationId = await getLocationId();
+            } catch (e) {
+                if (e?.code === 'MISSING_SQUARE_LOCATION_ID') {
+                    return res.status(500).json({
+                        error: e.code,
+                        message: e.message,
+                    });
+                }
+                throw e;
             }
-            throw e;
         }
 
+        let serviceFee;
+        if (typeof serviceFeeFromReq !== 'undefined' && serviceFeeFromReq !== null) {
+            serviceFee = Number(serviceFeeFromReq);
+        } else {
+            // Get totalLoadPrice, convert to string, then calculate 10%
+            const totalLoadPrice = Number(load.totalLoadPrice || load.price || 0);
+            if (isNaN(totalLoadPrice) || totalLoadPrice <= 0) {
+                return res.status(400).json({ error: 'INVALID_TOTAL_LOAD_PRICE' });
+            }
+            serviceFee = Math.round(totalLoadPrice * 0.10 * 100) / 100; // 10% rounded to 2 decimals
+        }
 
-        const amountCents = Math.max(1, Math.round(Number(load.totalLoadPrice || 100) * 100));
+        const calculatedServiceFee = Math.round(serviceFee * 100); // cents
         const origin = (req.headers.origin || '').replace(/\/$/, '');
         const isHttps = /^https:\/\//i.test(origin);
         const base = isHttps ? origin : (process.env.DASHBOARD_URL || 'https://allship.ai');
         const redirectUrl = `${base}/confirm-payment/${encodeURIComponent(loadId)}`;
+
         const { result } = await squareClient.checkoutApi.createPaymentLink({
             idempotencyKey: uuidv4(),
             description: `Payment for load ${load.loadId}`,
             checkoutOptions: { redirectUrl },
             quickPay: {
                 name: `Load ${load.loadId}`,
-                priceMoney: { amount: BigInt(amountCents), currency: 'USD' },
+                priceMoney: { amount: calculatedServiceFee, currency: 'USD' },
                 referenceId: String(loadId),
                 locationId,
             },
         });
+
         load.squareOrderId = result?.paymentLink?.orderId;
         await load.save();
         const approvalUrl = result?.paymentLink?.url;
@@ -448,10 +461,8 @@ async function payLoad(req, res) {
 
         load.squareOrderId = orderId;
         await load.save();
-
         return res.status(200).json({ approvalUrl, orderId, loadId });
     } catch (err) {
-        // Цей блок обробляє всі інші помилки
         console.error('Square create link error:', err);
 
         const status = err?.statusCode || 500;
@@ -482,13 +493,13 @@ async function payLoad(req, res) {
 
 async function confirmPayment(req, res) {
     try {
-        const { loadId, squareOrderId } = req.body || {};
-        if (!loadId) return res.status(400).json({ error: 'MISSING_LOAD_ID' });
+        const {loadId, squareOrderId} = req.body || {};
+        if (!loadId) return res.status(400).json({error: 'MISSING_LOAD_ID'});
 
-        const load = await Load.findOne({ loadId });
-        if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
+        const load = await Load.findOne({loadId});
+        if (!load) return res.status(404).json({error: 'LOAD_NOT_FOUND'});
         if (load.status === 'Payed') {
-            return res.status(200).json({ ok: true, already: true, message: 'Already Payed' });
+            return res.status(200).json({ok: true, already: true, message: 'Already Payed'});
         }
 
         // --- (опціональна) верифікація по Square ---
@@ -509,25 +520,25 @@ async function confirmPayment(req, res) {
         */
 
         if (!isPaid) {
-            return res.status(409).json({ error: 'NOT_PAID', message: 'Order is not completed yet' });
+            return res.status(409).json({error: 'NOT_PAID', message: 'Order is not completed yet'});
         }
 
         load.status = 'Payed';
         load.payedAt = new Date();
         await load.save();
 
-        return res.status(200).json({ ok: true, loadId, status: load.status });
+        return res.status(200).json({ok: true, loadId, status: load.status});
     } catch (e) {
         console.error('confirmPayment error:', e);
-        return res.status(500).json({ error: 'SERVER_ERROR', message: e?.message || 'Unknown error' });
+        return res.status(500).json({error: 'SERVER_ERROR', message: e?.message || 'Unknown error'});
     }
 }
 
 const createLoadFromCookie = async (req, res) => {
     try {
-        const { bookingData, userId, email } = req.body;
+        const {bookingData, userId, email} = req.body;
         if (!bookingData) {
-            return res.status(400).json({ error: 'Missing bookingData' });
+            return res.status(400).json({error: 'Missing bookingData'});
         }
 
         const parsed =
@@ -545,6 +556,10 @@ const createLoadFromCookie = async (req, res) => {
             unpacking,
             storage,
             chosenCarrier,
+            storageAmount,
+            climateControlled,
+            insurance,
+            longTerm,
             totalLoadPrice
         } = parsed;
 
@@ -553,7 +568,7 @@ const createLoadFromCookie = async (req, res) => {
             .update(JSON.stringify(parsed))
             .digest('hex');
 
-        const existingLoad = await Load.findOne({ bookingHash });
+        const existingLoad = await Load.findOne({bookingHash});
         if (existingLoad) {
             return res.status(200).json({
                 message: 'Load already exists for this booking',
@@ -597,6 +612,10 @@ const createLoadFromCookie = async (req, res) => {
             unpacking: !!unpacking,
             storageNeeds: !!storage,
             totalLoadPrice: totalLoadPrice,
+            storageAmount,
+            climateControlled,
+            insurance,
+            longTerm,
             chosenCarrier: {
                 carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
                 carrierId: chosenCarrier,
@@ -605,6 +624,12 @@ const createLoadFromCookie = async (req, res) => {
         });
 
         await newLoad.save();
+        await newLoad.save();
+        await sendEmail(
+            email,
+            'Your load has been created!',
+            `Your new load from ${from} to ${to} (ID: ${loadId}) has been created successfully.`
+        );
 
         return res.status(201).json({
             message: 'Load and chat created successfully',
@@ -613,20 +638,20 @@ const createLoadFromCookie = async (req, res) => {
         });
     } catch (error) {
         if (error.code === 11000 && error.keyPattern?.bookingHash) {
-            return res.status(200).json({ message: 'Duplicate load', alreadyExists: true });
+            return res.status(200).json({message: 'Duplicate load', alreadyExists: true});
         }
         console.error('[createLoadFromCookie]', error);
-        return res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({error: 'Internal server error'});
     }
 };
 
 const activatePayedLoads = async () => {
     try {
-        const pendingLoads = await Load.find({ status: 'Pending' });
+        const pendingLoads = await Load.find({status: 'Pending'});
         console.log(`Found ${pendingLoads.length} loads with status "Pending":`, pendingLoads.map(l => l.loadId));
         const result = await Load.updateMany(
-            { status: 'Pending' },
-            { $set: { status: 'Active' } }
+            {status: 'Pending'},
+            {$set: {status: 'Active'}}
         );
         console.log(`Modified count: ${result.modifiedCount}`);
         if (result.modifiedCount > 0) {

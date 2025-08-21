@@ -101,6 +101,10 @@ const LoadSchema = new mongoose.Schema({
     typeOfOfficeSpace: { type: String },
     numberOfLargeOfficeFurnitureItems: { type: String },
     doesYourOfficeHaveFragileItems: { type: String },
+    storageAmount: { type: String },
+    climateControlled: { type: Boolean },
+    insurance: { type: Boolean },
+    longTerm: { type: Boolean },
     computers: { type: Boolean },
     printers: { type: Boolean },
     copiers: { type: Boolean },
@@ -149,6 +153,7 @@ const LoadSchema = new mongoose.Schema({
     totalLoadPrice: { type: String },
     oven: { type: Boolean },
     otherAppliances: { type: Boolean },
+
     uniformsGear: { type: Boolean },
     weaponsFirearms: { type: Boolean },
     storageContainers: { type: Boolean },
