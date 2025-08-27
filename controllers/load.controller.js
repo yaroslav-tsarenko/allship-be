@@ -491,46 +491,40 @@ async function payLoad(req, res) {
     }
 }
 
+// JavaScript
 async function confirmPayment(req, res) {
     try {
-        const {loadId, squareOrderId} = req.body || {};
-        if (!loadId) return res.status(400).json({error: 'MISSING_LOAD_ID'});
+        const { loadId, squareOrderId, userId } = req.body || {};
+        if (!loadId || !userId) return res.status(400).json({ error: 'MISSING_LOAD_ID_OR_USER_ID' });
 
-        const load = await Load.findOne({loadId});
-        if (!load) return res.status(404).json({error: 'LOAD_NOT_FOUND'});
+        const load = await Load.findOne({ loadId });
+        if (!load) return res.status(404).json({ error: 'LOAD_NOT_FOUND' });
         if (load.status === 'Payed') {
-            return res.status(200).json({ok: true, already: true, message: 'Already Payed'});
+            return res.status(200).json({ ok: true, already: true, message: 'Already Payed' });
         }
 
-        // --- (опціональна) верифікація по Square ---
-        let isPaid = true; // за вимогою — ставимо Payed по loadId
+        let isPaid = true;
         const orderId = squareOrderId || load.squareOrderId;
 
-        // якщо хочеш перевірку — розкоментуй:
-        /*
-        if (orderId) {
-          try {
-            const { result } = await ordersApi.retrieveOrder(orderId);
-            const order = result?.order;
-            isPaid = order?.state === 'COMPLETED';
-          } catch (e) {
-            console.warn('Square verify failed, skipping:', e?.message || e);
-          }
-        }
-        */
-
         if (!isPaid) {
-            return res.status(409).json({error: 'NOT_PAID', message: 'Order is not completed yet'});
+            return res.status(409).json({ error: 'NOT_PAID', message: 'Order is not completed yet' });
         }
 
         load.status = 'Payed';
         load.payedAt = new Date();
         await load.save();
 
-        return res.status(200).json({ok: true, loadId, status: load.status});
+        await TransactionModel.create({
+            purpose: `Payment for load ${loadId}`,
+            amount: String(Math.round(Number(load.totalLoadPrice || load.price || '0') * 0.1 * 100) / 100),
+            type: 'payment',
+            userId,
+        });
+
+        return res.status(200).json({ ok: true, loadId, status: load.status });
     } catch (e) {
         console.error('confirmPayment error:', e);
-        return res.status(500).json({error: 'SERVER_ERROR', message: e?.message || 'Unknown error'});
+        return res.status(500).json({ error: 'SERVER_ERROR', message: e?.message || 'Unknown error' });
     }
 }
 
