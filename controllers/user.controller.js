@@ -1,16 +1,15 @@
-const path = require('path');
-const fs = require('fs');
-const axios = require('axios');
-const bcrypt = require('bcryptjs');
-
 const paypal = require('@paypal/checkout-server-sdk');
 const payPalClient = require('../utils/payPalClient');
 const client = payPalClient.client();
-
+const axios = require("axios");
+const path = require('path');
+const fs = require('fs');
+const bcrypt = require('bcryptjs');
 const sendEmail = require('../utils/sendEmail');
 const {createZohoLead} = require('../utils/addToZoho');
 const {uploadImage} = require('../utils/uploadImage');
 const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
 const User = require('../models/User');
 const UserModel = require('../models/User');
@@ -779,7 +778,6 @@ ${companyName}
 };
 
 
-// controllers/user.controller.js
 
 const findMatchedCarriers = async (req, res) => {
     const formData = req.body;
@@ -791,54 +789,60 @@ const findMatchedCarriers = async (req, res) => {
         return Math.round((sum / reviews.length) * 10) / 10;
     };
 
-    // Cap distance to max 200 miles
-    const estimateDistance = (from, to) => {
-        if (!from || !to) return 50;
-        return Math.max(30, Math.floor(Math.random() * 200));
+    // 📍 Получаем реальную дистанцию между from → to
+    const getDistanceMiles = async (from, to) => {
+        try {
+            const url = `https://maps.googleapis.com/maps/api/distancematrix/json?units=imperial&origins=${encodeURIComponent(from)}&destinations=${encodeURIComponent(to)}&key=${GOOGLE_MAPS_API_KEY}`;
+            const response = await axios.get(url);
+
+            if (response.data.rows[0].elements[0].status === "OK") {
+                const meters = response.data.rows[0].elements[0].distance.value;
+                const miles = meters / 1609.34;
+                return Math.max(30, Math.round(miles)); // минимум 30 миль
+            }
+            return 50; // fallback
+        } catch (err) {
+            console.error("Distance API error:", err.message);
+            return 50;
+        }
     };
 
-    // Cap mileage price to max $10/mile
+    // 🎯 Расчёт цены мили
     const getMileagePrice = (pricing, distance) => {
-        if (!Array.isArray(pricing)) return 2;
-        let price = pricing[0]?.price || 2;
+        if (!Array.isArray(pricing) || pricing.length === 0) return 2;
+
+        let price = pricing[0].price;
         for (const tier of pricing) {
             if (distance >= tier.from && distance <= tier.to) {
                 price = tier.price;
                 break;
             }
         }
-        return Math.min(price, 10);
+        return Math.min(price, 10); // max $10/mi
     };
 
     try {
+        // Забираем перевозчиков с прайсингом и отзывами
         const carriers = await User.find({
-            role: 'carrier',
+            role: "carrier",
             $expr: {
                 $and: [
-                    { $gt: [ { $size: '$reviews' }, 0 ] },
-                    { $gt: [ { $size: '$carrierMileagePricing' }, 0 ] }
+                    { $gt: [{ $size: "$reviews" }, 0] },
+                    { $gt: [{ $size: "$carrierMileagePricing" }, 0] }
                 ]
             }
         });
 
-        const scored = carriers.map(c => {
+        // Получаем дистанцию один раз
+        const distance = await getDistanceMiles(formData.from, formData.to);
+
+        const enriched = carriers.map((c, idx) => {
             const avgRating = calculateAverageRating(c.reviews);
-            const from = (formData.from || '').toLowerCase();
-            const state = (c.state || '').toLowerCase();
-            const inStateBonus = from && state && from.includes(state) ? 10 : 0;
-            const score = avgRating * 5 + (parseInt(c.serviceActivity) || 0) * 3 + Math.min(c.reviews.length, 10);
-            return { c, score, avgRating, inStateBonus };
-        });
 
-        const top = scored.sort((a, b) => b.score + b.inStateBonus - (a.score + a.inStateBonus)).slice(0, 6);
-
-        const enriched = top.map((entry, idx) => {
-            const c = entry.c;
-            const distance = estimateDistance(formData.from, formData.to);
             const mileagePrice = getMileagePrice(c.carrierMileagePricing, distance);
             let distanceCharge = Math.round(distance * mileagePrice);
 
-            // Cap distanceCharge to $25,000
+            // Лимит на перевозку
             distanceCharge = Math.min(distanceCharge, 25000);
 
             const packingCharge = formData.fullPacking ? c.carrierServiceCosts.packingCost : 0;
@@ -846,13 +850,12 @@ const findMatchedCarriers = async (req, res) => {
             const storageCharge = formData.storage ? (c.carrierServiceCosts.storageCost * (storageAmount || 1)) : 0;
 
             let totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
-
-            // Cap totalPrice to $25,000
             totalPrice = Math.min(totalPrice, 25000);
 
-            const pastOrders = c.pastOrders || Math.floor(Math.random() * 70) + 30;
+            // 👇 Реальный расчет orders
+            const pastOrders = c.pastOrders || c.reviews.length * 5;
 
-            const description = `${c.companyName} rated ${entry.avgRating}/5, serves ${c.state}, est. ${distance}mi, total ~$${totalPrice}.`;
+            const description = `${c.companyName} rated ${avgRating}/5, serves ${c.state}, est. ${distance}mi, total ~$${totalPrice}.`;
 
             return {
                 _id: c._id,
@@ -862,7 +865,7 @@ const findMatchedCarriers = async (req, res) => {
                 avatar: c.avatar,
                 state: c.state,
                 experience: `${c.serviceActivity || 0} years`,
-                rating: entry.avgRating,
+                rating: avgRating,
                 carrierServiceCosts: c.carrierServiceCosts,
                 carrierMileagePricing: c.carrierMileagePricing,
                 reviewsCount: c.reviews.length,
@@ -878,12 +881,21 @@ const findMatchedCarriers = async (req, res) => {
             };
         }).filter(carrier => carrier.totalPrice <= 25000);
 
-        res.json({ matchedCarriers: enriched });
+        // Сортировка: рейтинг → цена → опыт
+        const sorted = enriched.sort((a, b) => {
+            if (b.rating !== a.rating) return b.rating - a.rating;
+            if (a.totalPrice !== b.totalPrice) return a.totalPrice - b.totalPrice;
+            return parseInt(b.experience) - parseInt(a.experience);
+        }).slice(0, 6);
+
+        res.json({ matchedCarriers: sorted });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ message: 'Error', error: err.message });
+        res.status(500).json({ message: "Error", error: err.message });
     }
 };
+
+
 
 const createLoadFromCookie = async (req, res) => {
     try {

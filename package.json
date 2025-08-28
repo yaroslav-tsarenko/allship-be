@@ -6,10 +6,11 @@
     "start": "nodemon server.js"
   },
   "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.2",
     "@mollie/api-client": "^4.1.0",
     "@paypal/checkout-server-sdk": "^1.0.3",
     "aws-sdk": "^2.1692.0",
-    "axios": "^1.10.0",
+    "axios": "^1.11.0",
     "bcryptjs": "^3.0.2",
     "body-parser": "^1.20.3",
     "cookie-parser": "~1.4.4",
