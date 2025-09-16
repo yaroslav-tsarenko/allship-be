@@ -404,7 +404,6 @@ const generateLoadId = async () => {
 };
 
 
-
 const contactUsRequest = async (req, res) => {
     const {name, email, message} = req.body;
 
@@ -710,16 +709,16 @@ Letter:
 const autoBidForAllLoads = async () => {
     const carriers = await User.find({
         role: 'carrier',
-        carrierMileagePricing: { $exists: true, $not: { $size: 0 } },
-        carrierServiceCosts: { $exists: true },
-        reviews: { $exists: true, $not: { $size: 0 } },
-        serviceActivity: { $exists: true }
+        carrierMileagePricing: {$exists: true, $not: {$size: 0}},
+        carrierServiceCosts: {$exists: true},
+        reviews: {$exists: true, $not: {$size: 0}},
+        serviceActivity: {$exists: true}
     });
     const loads = await Load.find({
         status: 'Active',
-        bids: { $exists: true, $size: 0 },
-        pickupLocation: { $ne: null },
-        deliveryLocation: { $ne: null }
+        bids: {$exists: true, $size: 0},
+        pickupLocation: {$ne: null},
+        deliveryLocation: {$ne: null}
     });
     console.log(`🔍 Found ${carriers.length} carriers and ${loads.length} active loads to process.`);
     const globalCarrierBidMap = {};
@@ -750,7 +749,7 @@ ${companyName}
 
     for (const load of loads) {
         for (const carrier of carriers) {
-            const { bidPrice, letter } = globalCarrierBidMap[carrier._id.toString()];
+            const {bidPrice, letter} = globalCarrierBidMap[carrier._id.toString()];
 
             const deliveryDays = Math.floor(Math.random() * 7) + 1;
             const estimatedDeliveryTime = new Date();
@@ -777,135 +776,146 @@ ${companyName}
     console.log('🎯 Auto-bidding complete. All active empty loads filled.');
 };
 
+const ORS_API_KEY = "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
 
 
-const findMatchedCarriers = async (req, res) => {
-    const formData = req.body;
-    const storageAmount = Number(formData.storageAmount) || 0;
+const getCoordinatesORS = async (address) => {
+    const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(address)}`;
+    const response = await axios.get(url);
+    const coords = response.data?.features?.[0]?.geometry?.coordinates; // [lng, lat]
+    if (!coords) throw new Error(`⛔ Не вдалося знайти координати для: ${address}`);
+    return {lat: coords[1], lng: coords[0]};
+};
 
-    const calculateAverageRating = reviews => {
-        if (!reviews?.length) return 0;
-        const sum = reviews.reduce((a, r) => a + (r.rate || 0), 0);
-        return Math.round((sum / reviews.length) * 10) / 10;
-    };
-
-    // 📍 Получаем реальную дистанцию между from → to
-    const getDistanceMiles = async (from, to) => {
-        try {
-            const url = `https://maps.googleapis.com/maps/api/distancematrix/json?units=imperial&origins=${encodeURIComponent(from)}&destinations=${encodeURIComponent(to)}&key=${GOOGLE_MAPS_API_KEY}`;
-            const response = await axios.get(url);
-
-            if (response.data.rows[0].elements[0].status === "OK") {
-                const meters = response.data.rows[0].elements[0].distance.value;
-                const miles = meters / 1609.34;
-                return Math.max(30, Math.round(miles)); // минимум 30 миль
-            }
-            return 50; // fallback
-        } catch (err) {
-            console.error("Distance API error:", err.message);
-            return 50;
-        }
-    };
-
-    // 🎯 Расчёт цены мили
-    const getMileagePrice = (pricing, distance) => {
-        if (!Array.isArray(pricing) || pricing.length === 0) return 2;
-
-        let price = pricing[0].price;
-        for (const tier of pricing) {
-            if (distance >= tier.from && distance <= tier.to) {
-                price = tier.price;
-                break;
-            }
-        }
-        return Math.min(price, 10); // max $10/mi
-    };
-
+const getDistanceMiles = async (from, to) => {
     try {
-        // Забираем перевозчиков с прайсингом и отзывами
-        const carriers = await User.find({
-            role: "carrier",
-            $expr: {
-                $and: [
-                    { $gt: [{ $size: "$reviews" }, 0] },
-                    { $gt: [{ $size: "$carrierMileagePricing" }, 0] }
-                ]
+        const origin = await getCoordinatesORS(from);
+        const destination = await getCoordinatesORS(to);
+
+        const body = {
+            locations: [
+                [origin.lng, origin.lat],
+                [destination.lng, destination.lat]
+            ],
+            metrics: ["distance"],
+            units: "m", // метри
+            sources: [0],
+            destinations: [1]
+        };
+
+        const url = `https://api.openrouteservice.org/v2/matrix/driving-car`;
+        const response = await axios.post(url, body, {
+            headers: {
+                Authorization: ORS_API_KEY,
+                "Content-Type": "application/json"
             }
         });
 
-        // Получаем дистанцию один раз
-        const distance = await getDistanceMiles(formData.from, formData.to);
+        const meters = response.data?.distances?.[0]?.[0]; // перша точка до другої
+        if (!meters) throw new Error("No distance data");
 
-        const enriched = carriers.map((c, idx) => {
-            const avgRating = calculateAverageRating(c.reviews);
+        const miles = meters / 1609.34;
+        return Math.max(30, Math.round(miles)); // мінімум 30 миль
+    } catch (err) {
+        console.error("❌ Distance API error (ORS):", err.message);
+    }
+    return 50; // fallback
+};
 
-            const mileagePrice = getMileagePrice(c.carrierMileagePricing, distance);
-            let distanceCharge = Math.round(distance * mileagePrice);
 
-            // Лимит на перевозку
-            distanceCharge = Math.min(distanceCharge, 25000);
+const getMileageRate = (pricing, distance) => {
+    if (!Array.isArray(pricing)) return 2.5;
+    for (const tier of pricing) {
+        if (distance >= tier.fromMiles && distance <= tier.toMiles) {
+            return tier.price;
+        }
+    }
+    return pricing.at(-1)?.price || 2.5;
+};
 
-            const packingCharge = formData.fullPacking ? c.carrierServiceCosts.packingCost : 0;
-            const unpackingCharge = formData.unpacking ? c.carrierServiceCosts.unpackingCost : 0;
-            const storageCharge = formData.storage ? (c.carrierServiceCosts.storageCost * (storageAmount || 1)) : 0;
+const calculateAvgRating = (reviews = []) => {
+    if (!reviews.length) return 0;
+    const sum = reviews.reduce((acc, r) => acc + (r.rate || 0), 0);
+    return Math.round((sum / reviews.length) * 10) / 10;
+};
 
-            let totalPrice = distanceCharge + packingCharge + unpackingCharge + storageCharge;
-            totalPrice = Math.min(totalPrice, 25000);
+const findMatchedCarriers = async (req, res) => {
+    const { from, to, volume = 0, packingLevel = 0, unpacking, storage, storageAmount = 0 } = req.body;
 
-            // 👇 Реальный расчет orders
-            const pastOrders = c.pastOrders || c.reviews.length * 5;
+    try {
+        const carriers = await User.find({
+            role: "carrier",
+            carrierMileagePricing: { $exists: true, $ne: [] },
+            reviews: { $exists: true, $ne: [] }
+        });
 
-            const description = `${c.companyName} rated ${avgRating}/5, serves ${c.state}, est. ${distance}mi, total ~$${totalPrice}.`;
+        const distance = await getDistanceMiles(from, to);
+        console.log(`📦 Distance from "${from}" to "${to}" = ${distance} miles, Volume = ${volume} cu ft`);
+
+        const matchedCarriers = carriers.map((c, idx) => {
+            const rating = calculateAvgRating(c.reviews);
+
+            // ---- Distance ----
+            const mileageRate = getMileageRate(c.carrierMileagePricing, distance); // $/cu ft
+            const distanceCost = +(volume * mileageRate).toFixed(2);
+
+            // ---- Packing ----
+            const packingRate = c.carrierServiceCosts?.packingCost || 0;
+            const packingCost = +(volume * packingRate * packingLevel).toFixed(2);
+
+            // ---- Unpacking ----
+            const unpackingRate = c.carrierServiceCosts?.unpackingCost || 0;
+            const unpackingCost = unpacking ? +(volume * unpackingRate).toFixed(2) : 0;
+
+            // ---- Storage ----
+            const storageRate = c.carrierServiceCosts?.storageCost || 0;
+            const storageCost = storage ? +(volume * storageRate * storageAmount).toFixed(2) : 0;
+
+            // ---- Total ----
+            const totalPrice = +(distanceCost + packingCost + unpackingCost + storageCost).toFixed(2);
 
             return {
                 _id: c._id,
-                name: c.name,
-                secondName: c.secondName,
                 companyName: c.companyName,
                 avatar: c.avatar,
-                state: c.state,
+                rating,
                 experience: `${c.serviceActivity || 0} years`,
-                rating: avgRating,
-                carrierServiceCosts: c.carrierServiceCosts,
-                carrierMileagePricing: c.carrierMileagePricing,
-                reviewsCount: c.reviews.length,
-                bestMatch: idx === 0,
                 distance,
-                distanceCharge,
-                packingCharge,
-                unpackingCharge,
-                storageCharge,
+                volume,
+                distanceCharge: distanceCost,
+                packingCharge: packingCost,
+                unpackingCharge: unpackingCost,
+                storageCharge: storageCost,
                 totalPrice,
-                pastOrders,
-                description
+                pastOrders: c.pastOrders || c.reviews.length * 5,
+                bestMatch: idx === 0,
+                description: `${c.companyName} — ${distance}mi, ${volume}ft³`
             };
-        }).filter(carrier => carrier.totalPrice <= 25000);
+        });
 
-        // Сортировка: рейтинг → цена → опыт
-        const sorted = enriched.sort((a, b) => {
-            if (b.rating !== a.rating) return b.rating - a.rating;
-            if (a.totalPrice !== b.totalPrice) return a.totalPrice - b.totalPrice;
-            return parseInt(b.experience) - parseInt(a.experience);
-        }).slice(0, 6);
+        return res.json({
+            matchedCarriers: matchedCarriers
+                .filter(c => c.totalPrice > 0)
+                .sort((a, b) => a.totalPrice - b.totalPrice)
+                .slice(0, 6)
+        });
 
-        res.json({ matchedCarriers: sorted });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Error", error: err.message });
+        console.error("❌ Error finding carriers:", err.message);
+        return res.status(500).json({ message: "Server error", error: err.message });
     }
 };
-
 
 
 const createLoadFromCookie = async (req, res) => {
     try {
         const data = req.body;
         if (!data || !data.userId) {
-            return res.status(400).json({ error: 'Missing userId or data.' });
+            return res.status(400).json({error: 'Missing userId or data.'});
         }
 
         const user = await User.findById(data.userId);
-        if (!user) return res.status(404).json({ message: 'User not found' });
+        if (!user) return res.status(404).json({message: 'User not found'});
 
         const formatSubType = (type) => {
             if (!type) return 'Moving';
@@ -969,7 +979,7 @@ const createLoadFromCookie = async (req, res) => {
             images: Array.isArray(data.images) ? data.images : [],
             bidsQuantity: 0,
             avgPrice: 0,
-            ...(chosenCarrierObj && { chosenCarrier: chosenCarrierObj })
+            ...(chosenCarrierObj && {chosenCarrier: chosenCarrierObj})
         });
 
         await newLoad.save();
@@ -996,7 +1006,7 @@ AllShip Team`
         });
     } catch (err) {
         console.error('Error in createLoadFromCookie:', err);
-        res.status(500).json({ error: 'Failed to create load from cookie' });
+        res.status(500).json({error: 'Failed to create load from cookie'});
     }
 };
 

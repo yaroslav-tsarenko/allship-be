@@ -6,6 +6,7 @@ const Chat = require('./models/Chat');
 const WebSocket = require('ws');
 const helmet = require('helmet');
 const cron = require('node-cron');
+const User = require('./models/User');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const authRoutes = require('./routes/auth.route');
