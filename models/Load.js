@@ -153,7 +153,12 @@ const LoadSchema = new mongoose.Schema({
     totalLoadPrice: { type: String },
     oven: { type: Boolean },
     otherAppliances: { type: Boolean },
-
+    truckSize: { type: String },
+    whatToTransport: { type: String },
+    specialRequirements: { type: String },
+    loadingHelp: { type: String },
+    stairsOrElevator: { type: String },
+    extraOptions: { type: [String] },
     uniformsGear: { type: Boolean },
     weaponsFirearms: { type: Boolean },
     storageContainers: { type: Boolean },

@@ -706,50 +706,76 @@ Letter:
     return response.data.choices[0].message.content.trim();
 };
 
+const parseNum = v => isNaN(Number(v)) ? 0 : Number(v);
+
+
+const ORS_API_KEY = "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
+
 const autoBidForAllLoads = async () => {
     const carriers = await User.find({
         role: 'carrier',
-        carrierMileagePricing: {$exists: true, $not: {$size: 0}},
-        carrierServiceCosts: {$exists: true},
-        reviews: {$exists: true, $not: {$size: 0}},
-        serviceActivity: {$exists: true}
+        carrierMileagePricing: { $exists: true, $not: { $size: 0 } },
+        carrierServiceCosts: { $exists: true },
+        reviews: { $exists: true, $not: { $size: 0 } },
+        serviceActivity: { $exists: true }
     });
     const loads = await Load.find({
         status: 'Active',
-        bids: {$exists: true, $size: 0},
-        pickupLocation: {$ne: null},
-        deliveryLocation: {$ne: null}
+        bids: { $exists: true, $size: 0 },
+        pickupLocation: { $ne: null },
+        deliveryLocation: { $ne: null }
     });
     console.log(`🔍 Found ${carriers.length} carriers and ${loads.length} active loads to process.`);
-    const globalCarrierBidMap = {};
-    for (const carrier of carriers) {
-        const price = Math.floor(Math.random() * (3500 - 1000 + 1)) + 1000;
-        const companyName = carrier.companyName || `${carrier.name} ${carrier.secondName}`;
-        const experience = carrier.serviceActivity?.yearsOfExperience || Math.floor(Math.random() * 6 + 1);
-        const rating = (carrier.reviews.reduce((sum, r) => sum + (r.rating || 5), 0) / carrier.reviews.length).toFixed(1);
-        const letter = `
+
+    for (const load of loads) {
+        // Extract load parameters
+        const volume = parseNum(load.totalSquareFootage);
+        const usedVolume = volume > 0 ? volume : 600;
+        const packingLevel = parseNum(load.packingLevel) || 0;
+        const unpacking = !!load.unpacking;
+        const storage = !!load.storageNeeds;
+        const storageAmount = parseNum(load.storageAmount) || 0;
+
+        // Calculate distance
+        const distance = await getDistanceMiles(load.pickupLocation, load.deliveryLocation);
+
+        for (const carrier of carriers) {
+            // --- Distance ---
+            const mileageRate = getMileageRate(carrier.carrierMileagePricing, distance); // $/cu ft
+            const distanceCost = +(usedVolume * mileageRate).toFixed(2);
+
+            // --- Packing ---
+            const packingRate = carrier.carrierServiceCosts?.packingCost || 0;
+            const packingCost = +(usedVolume * packingRate * packingLevel).toFixed(2);
+
+            // --- Unpacking ---
+            const unpackingRate = carrier.carrierServiceCosts?.unpackingCost || 0;
+            const unpackingCost = unpacking ? +(usedVolume * unpackingRate).toFixed(2) : 0;
+
+            // --- Storage ---
+            const storageRate = carrier.carrierServiceCosts?.storageCost || 0;
+            const storageCost = storage ? +(usedVolume * storageRate * storageAmount).toFixed(2) : 0;
+
+            // --- Total ---
+            const bidPrice = +(distanceCost + packingCost + unpackingCost + storageCost).toFixed(2);
+
+            // --- Letter ---
+            const companyName = carrier.companyName || `${carrier.name} ${carrier.secondName}`;
+            const experience = carrier.serviceActivity?.yearsOfExperience || Math.floor(Math.random() * 6 + 1);
+            const rating = (carrier.reviews.reduce((sum, r) => sum + (r.rating || 5), 0) / carrier.reviews.length).toFixed(1);
+            const letter = `
 Hello,
 
-My name is ${carrier.name} from ${companyName}. With over ${experience} years of experience in the logistics industry, I specialize in providing dependable, on-time deliveries with excellent customer communication.
+We are ${companyName}. With over ${experience} years of experience in the logistics industry, I specialize in providing dependable, on-time deliveries with excellent customer communication.
 
-Based on the route and requirements, I can offer to deliver your shipment for **$${price}**. My team and I prioritize careful handling, real-time tracking, and customer satisfaction — as reflected in our ${rating}-star rating from previous clients.
+Based on the route and requirements, I can offer to deliver your shipment for **$${bidPrice}**. My team and I prioritize careful handling, real-time tracking, and customer satisfaction — as reflected in our ${rating}-star rating from previous clients.
 
 If you choose to work with us, I assure you a smooth, professional, and worry-free experience from pickup to drop-off.
 
 Looking forward to assisting you!
 Best regards,
 ${companyName}
-        `.trim();
-
-        globalCarrierBidMap[carrier._id.toString()] = {
-            bidPrice: price.toString(),
-            letter
-        };
-    }
-
-    for (const load of loads) {
-        for (const carrier of carriers) {
-            const {bidPrice, letter} = globalCarrierBidMap[carrier._id.toString()];
+            `.trim();
 
             const deliveryDays = Math.floor(Math.random() * 7) + 1;
             const estimatedDeliveryTime = new Date();
@@ -757,12 +783,28 @@ ${companyName}
 
             load.bids.push({
                 carrierId: carrier._id.toString(),
-                carrierCompanyName: carrier.companyName || `${carrier.name} ${carrier.secondName}`,
-                bidPrice,
+                carrierCompanyName: companyName,
+                bidPrice: bidPrice.toString(),
                 aiMadeBid: true,
                 letter,
                 estimatedDeliveryTime,
                 createdAt: new Date()
+            });
+
+            // Debug log for each carrier
+            console.log({
+                carrier: carrier._id,
+                usedVolume,
+                distance,
+                mileageRate,
+                distanceCost,
+                packingRate,
+                packingCost,
+                unpackingRate,
+                unpackingCost,
+                storageRate,
+                storageCost,
+                bidPrice
             });
         }
         load.bidsQuantity = load.bids.length;
@@ -775,8 +817,6 @@ ${companyName}
     }
     console.log('🎯 Auto-bidding complete. All active empty loads filled.');
 };
-
-const ORS_API_KEY = "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
 
 
 const getCoordinatesORS = async (address) => {

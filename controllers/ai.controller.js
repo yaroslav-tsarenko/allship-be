@@ -3,9 +3,11 @@ const User = require('../models/User');
 const AIChat = require('../models/AIChat');
 const dotenv = require('dotenv');
 dotenv.config();
+const Load = require('../models/Load');
 
 const API_KEY = process.env.OPENAI_KEY;
 const API_URL = 'https://api.openai.com/v1/chat/completions';
+
 
 const sendMessage = async (req, res) => {
     const {messages, email, aiChatId} = req.body;
@@ -19,59 +21,36 @@ const sendMessage = async (req, res) => {
                 content: m.content.trim()
             }));
 
-
-        const user = await User.findOne({email});
+        const user = await User.findOne({email}).lean();
         if (!user) {
             console.error("User not found for email: ", email);
             return res.status(404).send('User not found');
         }
 
-        const userInfo = JSON.stringify(user);
-        console.log("User Info: ", userInfo);
+        // Remove password from user info
+        const {password, ...userSafe} = user;
+
+        // Fetch all user's Loads
+        const loads = await Load.find({userId: user._id}).lean();
+
+        // Prepare info for the system prompt
+        const userInfo = JSON.stringify(userSafe);
+        const loadsInfo = JSON.stringify(loads);
+
+        const systemPrompt = `
+The user's name is ${userSafe.name}.
+Here is the user's profile: ${userInfo}
+Here are all user's Loads: ${loadsInfo}
+DO NOT TELL HIM ABOUT HIS PASSWORD, IT IS SECRET INFORMATION.
+If the user asks about his profile, you can answer, but DO NOT TELL HIS PASSWORD.
+... [rest of your instructions as before]
+`;
 
         const response = await axios.post(API_URL, {
             model: 'gpt-4',
             messages: [
                 ...sanitizedMessages,
-                {
-                    role: 'system', content: `The user's name is ${user.name}. 
-                Please respond in a friendly manner with emojis. Also analyze 
-                this data of user ${userInfo}, DO NOT TELL HIM ABOUT HIS PASSWORD,
-                 IT SECRET INFORMATION, also if user will be asking about him info
-                  you need to answer friendly and with good intonation, you can analyze his data, 
-                  but dont tell that you analyzed user's data, if user will asks about his
-                   data you can answer, but DO NOT TELL HIS PASSWORD, you do not need
-                    to answer with greeting on any message if he asks you something else,
-                     personalize your answer because you already used Hello userName! How can I
-                      assist you today?, you need to personalize the answer and make it detailed, if user 
-                      asks you about password you give give him a friendly refusal,
-                       IF USER ASKS ABOUT PASSWORD YOU GIVE RESPONSE: i cant share your password, when customer asks you about "give load status or load update or update load or etc" you answer like (
-                       🔹 Load: In transit from Los Angeles, CA to New York, NY 
-                       🔹 Current Driver Location: [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
-                       🔹 Weather Conditions: [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
-                       🔹 Remaining Distance: [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
-                       🔹 Estimated Time of Arrival (ETA): [come up here random data (DO NOT ANSWER LIKE "random data", give real data)] 
-                       📍 Live Tracking Available – Click Here), you always need to give a formatted text, and perfect answer,
-                       
-                        Also, when a user asks you about a project and how to manage it, we have the AllShipAI project,
-                        a logistics platform supported by AI, if a user wants to create a load, they need to click 
-                        on the “Create Load” button on the left or go to the “My Loads” page on the left side of 
-                        the menu, also do not give very detailed information about the project, you can give a brief, and all your's reponses must be short, do not write long responses
-                        Please respond using clear formatting with:
-
-- **Bold** for important terms
-- 🔹 Bullet points for lists
-- ✅ Checkmarks or ❗ for alerts
-- 🎯 Emojis for friendliness
-- 🧭 Headings using Markdown (##, ###)
-- Use short paragraphs for readability
-
-DO NOT use plain text. DO NOT include raw JSON or code blocks unless requested. Format every response beautifully with structure. use also bullet points 
-
-                        
-                        `
-
-                }
+                { role: 'system', content: systemPrompt }
             ],
         }, {
             headers: {
