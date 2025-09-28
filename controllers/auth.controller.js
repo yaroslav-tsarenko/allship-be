@@ -132,7 +132,13 @@ const registerAndAuth = async (req, res) => {
         });
         await newUser.save();
 
-        await sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`);
+        const userId = newUser._id;
+        const token = jwt.sign({userId: newUser._id}, JWT_SECRET, {expiresIn: '7d'});
+        res.status(201).json({message: 'User registered successfully', token, userId});
+
+        // Run these in the background, do not await
+        sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`)
+            .catch(console.error);
 
         const message = role === 'carrier'
             ? `🚛 NEW CARRIER 🚛:
@@ -155,18 +161,15 @@ const registerAndAuth = async (req, res) => {
 🌐 Company URL: ${companyUrl}
 📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
         sendMessageToChannel(message);
-        const userId = newUser._id;
-        const token = jwt.sign({userId: newUser._id}, JWT_SECRET, {expiresIn: '7d'});
-        res.status(201).json({message: 'User registered successfully', token, userId});
 
-        await createZohoLead({
+        createZohoLead({
             firstName: name,
             lastName: secondName,
             email,
             company: companyName,
             phone,
             message: `New user registered with role: ${role}`,
-        });
+        }).catch(console.error);
 
     } catch (error) {
         console.error('Error:', error);
