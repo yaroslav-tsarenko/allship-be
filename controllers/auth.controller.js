@@ -1,222 +1,268 @@
-const {validationResult} = require('express-validator');
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { validationResult } = require("express-validator");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
-const {sendMessageToChannel} = require("../telegram-bot/telegramBot");
-const {createZohoLead} = require("../utils/addToZoho");
-require('dotenv').config();
+require("dotenv").config();
 
-const JWT_SECRET = "4c025b65c5cc41dafdd9b7eafb297d97df58c367eb9d924757072761e6c5e8e41531550eb0d95a0e1161a22b5929d9a38a8af9c65ce23be91d10c3b9fd482d05";
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.warn("⚠️  Missing JWT_SECRET in .env — using fallback key");
+}
 
-const register = async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        return res.status(400).json({errors: errors.array()});
-    }
+/** 🔹 Генератор 6-значного коду підтвердження */
+const generateCode = () =>
+    Math.floor(100000 + Math.random() * 900000).toString();
 
-    const {
-        name,
-        secondName,
-        email,
-        phone,
-        password,
-        companyName,
-        companyUrl,
-        estShipmentsPerMonth,
-        dotNumber,
-        datNumber,
-        mcNumber,
-        role
-    } = req.body;
-
-    try {
-        const existingUser = await User.findOne({email});
-        if (existingUser) {
-            return res.status(400).json({message: 'User already exists'});
-        }
-        const newUser = new User({
-            name,
-            secondName,
-            email,
-            phone,
-            password,
-            companyName,
-            companyUrl,
-            estShipmentsPerMonth,
-            dotNumber,
-            datNumber,
-            mcNumber,
-            role,
-        });
-        await newUser.save();
-
-        await sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`);
-
-        const message = role === 'carrier'
-            ? `🚛 NEW CARRIER 🚛:
-👤 Name: ${name}
-👥 Second Name: ${secondName}
-📧 Email: ${email}
-📞 Phone: ${phone}
-🏢 Company Name: ${companyName}
-🌐 Company URL: ${companyUrl}
-📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}
-🚚 DOT Number: ${dotNumber}
-📊 DAT Number: ${datNumber}
-🆔 MC Number: ${mcNumber}`
-            : `📦 NEW SHIPPER 📦:
-👤 Name: ${name}
-👥 Second Name: ${secondName}
-📧 Email: ${email}
-📞 Phone: ${phone}
-🏢 Company Name: ${companyName}
-🌐 Company URL: ${companyUrl}
-📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
-
-        sendMessageToChannel(message);
-        await createZohoLead({
-            firstName: name,
-            lastName: secondName,
-            email,
-            source: `Landing Page - ${role}`,
-            company: companyName,
-            phone,
-            message: `New user registered with role: ${role}`,
-        });
-        res.status(201).json({message: 'User registered successfully'});
-    } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({message: 'Server error', error});
-    }
-};
-
+/** 🔹 REGISTER (з підтвердженням через email) */
 const registerAndAuth = async (req, res) => {
+    console.log("📩 [REGISTER] Incoming request body:", req.body);
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        return res.status(400).json({errors: errors.array()});
+        console.warn("⚠️  Validation errors:", errors.array());
+        return res.status(400).json({ errors: errors.array() });
     }
 
-    const {
-        name,
-        secondName,
-        email,
-        phone,
-        password,
-        companyName,
-        companyUrl,
-        estShipmentsPerMonth,
-        dotNumber,
-        datNumber,
-        mcNumber,
-        role
-    } = req.body;
+    const { name, secondName, email, phone, password } = req.body;
 
     try {
-        const existingUser = await User.findOne({email});
+        console.log(`🔍 Checking if user exists: ${email}`);
+        const existingUser = await User.findOne({ email });
         if (existingUser) {
-            return res.status(400).json({message: 'User already exists'});
+            console.warn(`⚠️  User with email ${email} already exists`);
+            return res.status(400).json({ message: "User already exists" });
         }
+
+        console.log("🔐 Hashing password...");
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const verificationCode = generateCode();
+        const verificationCodeExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 min TTL
+
+        console.log(`✅ Generated code: ${verificationCode}`);
+
         const newUser = new User({
             name,
             secondName,
             email,
             phone,
-            password,
-            companyName,
-            companyUrl,
-            estShipmentsPerMonth,
-            dotNumber,
-            datNumber,
-            mcNumber,
-            role,
+            password: hashedPassword,
+            verificated: false,
+            verificationCode,
+            verificationCodeExpires,
         });
+
         await newUser.save();
+        console.log("💾 User saved to DB:", newUser._id);
 
-        const userId = newUser._id;
-        const token = jwt.sign({userId: newUser._id}, JWT_SECRET, {expiresIn: '7d'});
-        res.status(201).json({message: 'User registered successfully', token, userId});
+        // Надсилаємо емейл
+        const htmlContent = `
+      <h2>Welcome, ${name}!</h2>
+      <p>To verify your AllShipAI account, please use this code:</p>
+      <div style="font-size:28px;font-weight:bold;color:#2563eb;margin:12px 0;">
+        ${verificationCode}
+      </div>
+      <p>This code is valid for 15 minutes.</p>
+    `;
 
-        // Run these in the background, do not await
-        sendEmail(email, 'Welcome to the team! 🎉', `Thanks for registering. We're excited to have you on board.`)
-            .catch(console.error);
+        await sendEmail(email, "Verify your AllShipAI account 🚀", htmlContent);
 
-        const message = role === 'carrier'
-            ? `🚛 NEW CARRIER 🚛:
-👤 Name: ${name}
-👥 Second Name: ${secondName}
-📧 Email: ${email}
-📞 Phone: ${phone}
-🏢 Company Name: ${companyName}
-🌐 Company URL: ${companyUrl}
-📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}
-🚚 DOT Number: ${dotNumber}
-📊 DAT Number: ${datNumber}
-🆔 MC Number: ${mcNumber}`
-            : `📦 NEW SHIPPER 📦:
-👤 Name: ${name}
-👥 Second Name: ${secondName}
-📧 Email: ${email}
-📞 Phone: ${phone}
-🏢 Company Name: ${companyName}
-🌐 Company URL: ${companyUrl}
-📦 Estimated Shipments Per Month: ${estShipmentsPerMonth}`;
-        sendMessageToChannel(message);
+        console.log(`📨 Verification email sent to ${email}`);
 
-        createZohoLead({
-            firstName: name,
-            lastName: secondName,
+        return res.status(201).json({
+            message: "User registered successfully, verification required",
+            userId: newUser._id,
             email,
-            company: companyName,
-            phone,
-            message: `New user registered with role: ${role}`,
-        }).catch(console.error);
-
+        });
     } catch (error) {
-        console.error('Error:', error);
-        res.status(500).json({message: 'Server error', error});
+        console.error("❌ Error in registerAndAuth:", error);
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
-const login = async (req, res) => {
+/** 🔹 VERIFY CODE */
+const verifyCode = async (req, res) => {
+    console.log("📩 [VERIFY CODE] Body:", req.body);
+
+    const { email, code } = req.body;
+    if (!email || !code)
+        return res.status(400).json({ message: "Email and code are required" });
+
     try {
-        const {email, password} = req.body;
-        console.log('User logging in:', req.body);
-        const user = await User.findOne({email});
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ message: "User not found" });
+        if (user.verificationCode !== code)
+            return res.status(400).json({ message: "Invalid code" });
+        if (new Date(user.verificationCodeExpires).getTime() < Date.now())
+            return res.status(400).json({ message: "Code expired" });
 
-        if (!user) {
-            console.error('User not found:', email);
-            return res.status(400).json({error: 'Invalid credentials'});
-        }
+        user.verificated = true;
+        user.verificationCode = null;
+        user.verificationCodeExpires = null;
+        await user.save();
 
-        if (password !== user.password) {
-            console.error('Password does not match for user:', email);
-            return res.status(400).json({error: 'Invalid credentials'});
-        }
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
 
-        const token = jwt.sign({userId: user._id}, JWT_SECRET, {expiresIn: '7d'});
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const currentUser = await User.findById(decoded.userId);
+        res.cookie("token", token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+            domain: process.env.NODE_ENV === "production" ? ".allship.ai" : undefined,
+            path: "/",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
 
-        if (!currentUser) {
-            return res.status(400).json({error: 'User not found'});
-        }
+        return res.status(200).json({
+            message: "Verification successful",
+            token,
+            userId: user._id,
+        });
 
-        res.status(201).json({message: 'User logged in successfully', token});
     } catch (error) {
-        console.error('Error during login:', error);
-        res.status(500).send('Server error');
+        console.error("❌ Verification error:", error);
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
 
+/** 🔹 LOGIN */
+const login = async (req, res) => {
+    console.log("📩 [LOGIN] Body:", req.body);
+
+    try {
+        const { email, password } = req.body;
+
+        const user = await User.findOne({ email });
+        if (!user) {
+            console.warn("❌ Invalid email:", email);
+            return res.status(400).json({ error: "Invalid credentials" });
+        }
+
+        console.log("🔍 Checking password...");
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            console.warn("❌ Wrong password for user:", email);
+            return res.status(400).json({ error: "Invalid credentials" });
+        }
+
+        if (!user.verificated) {
+            console.warn("⚠️  Email not verified:", email);
+            return res.status(403).json({ error: "Email not verified" });
+        }
+
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
+
+        res.cookie("token", token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+            domain: process.env.NODE_ENV === "production" ? ".allship.ai" : undefined,
+            path: "/",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
+        return res.status(200).json({
+            message: "Login successful",
+            userId: user._id,
+        });
+
+    } catch (error) {
+        console.error("❌ Login error:", error);
+        return res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
+/** 🔹 LOGOUT */
 const logout = (req, res) => {
-    res.clearCookie('token', {path: '/'});
-    res.status(200).json({message: 'Logged out successfully'});
+    console.log("👋 [LOGOUT]");
+    res.clearCookie("token", { path: "/" });
+    return res.status(200).json({ message: "Logged out successfully" });
+};
+
+/** 🔹 Register wrapper (для сумісності зі старими роутами) */
+const register = async (req, res) => {
+    console.log("🔁 [REGISTER] Delegating to registerAndAuth()");
+    return registerAndAuth(req, res);
+};
+
+const forgotPassword = async (req, res) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: "Email is required" });
+
+    try {
+        const user = await User.findOne({ email });
+        if (!user) {
+            console.warn("⚠️ Email not found:", email);
+            return res.status(404).json({ message: "User not found" }); // <-- зміна
+        }
+
+        const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, {
+            expiresIn: "15m",
+        });
+
+        user.resetPasswordToken = resetToken;
+        user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
+        await user.save();
+
+        const isProd = process.env.NODE_ENV === "production";
+        const resetLink = `${isProd ? "https://allship.ai" : "http://localhost:3000"}/reset-password/${resetToken}`;
+
+        const html = `
+      <h2>Password Reset Request</h2>
+      <p>Click the link below to reset your password (valid for 15 minutes):</p>
+      <a href="${resetLink}" style="font-size:18px;color:#2563eb;">Reset Password</a>
+    `;
+
+        await sendEmail(user.email, "Reset Your AllShipAI Password", html);
+        console.log(`📨 Reset link sent to ${email}`);
+
+        return res.status(200).json({ message: "Reset link sent successfully" });
+    } catch (error) {
+        console.error("❌ forgotPassword error:", error);
+        res.status(500).json({ message: "Server error" });
+    }
+};
+
+const resetPassword = async (req, res) => {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    if (!token || !password)
+        return res.status(400).json({ message: "Token and password required" });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await User.findById(decoded.userId);
+        if (!user) return res.status(400).json({ message: "User not found" });
+
+        if (
+            !user.resetPasswordToken ||
+            user.resetPasswordToken !== token ||
+            new Date(user.resetPasswordExpires).getTime() < Date.now()
+        ) {
+            return res.status(400).json({ message: "Token expired or invalid" });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        user.password = hashedPassword;
+        user.resetPasswordToken = null;
+        user.resetPasswordExpires = null;
+        await user.save();
+
+        return res.status(200).json({ message: "Password successfully changed" });
+    } catch (error) {
+        console.error("❌ resetPassword error:", error);
+        res.status(500).json({ message: "Server error" });
+    }
 };
 
 module.exports = {
     register,
-    login,
     registerAndAuth,
+    verifyCode,
+    login,
     logout,
+    resetPassword,
+    forgotPassword
 };

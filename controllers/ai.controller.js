@@ -4,81 +4,140 @@ const AIChat = require('../models/AIChat');
 const dotenv = require('dotenv');
 dotenv.config();
 const Load = require('../models/Load');
+const Transaction = require("../models/Transaction")
+const Chat = require("../models/Chat")
 
 const API_KEY = process.env.OPENAI_KEY;
 const API_URL = 'https://api.openai.com/v1/chat/completions';
 
 
 const sendMessage = async (req, res) => {
-    const {messages, email, aiChatId} = req.body;
+    const { messages, email, aiChatId } = req.body;
+
     try {
-        console.log("Request Body: ", req.body);
+        console.log("Incoming AI message:", { email, aiChatId, messagesLength: messages?.length });
 
-        const sanitizedMessages = messages
-            .filter(m => m.content && typeof m.content === 'string' && m.content !== 'No data')
-            .map(m => ({
-                role: m.role,
-                content: m.content.trim()
-            }));
+        if (!email) return res.status(400).json({ message: "Missing user email" });
 
-        const user = await User.findOne({email}).lean();
-        if (!user) {
-            console.error("User not found for email: ", email);
-            return res.status(404).send('User not found');
-        }
+        // --- 1️⃣ Get user ---
+        const user = await User.findOne({ email }).lean();
+        if (!user) return res.status(404).json({ message: "User not found" });
+        const { password, resetPasswordToken, verificationCode, ...userSafe } = user;
 
-        // Remove password from user info
-        const {password, ...userSafe} = user;
+        // --- 2️⃣ Get related data ---
+        const [loads, transactions, chats, aiChats] = await Promise.all([
+            Load.find({ userId: user._id }).lean(),
+            Transaction.find({ userId: user._id }).lean(),
+            Chat.find({ userId: user._id }).lean(),
+            AIChat.find({ userId: user._id }).lean(),
+        ]);
 
-        // Fetch all user's Loads
-        const loads = await Load.find({userId: user._id}).lean();
+        // --- 3️⃣ Sanitize incoming user messages ---
+        const sanitizedMessages = (messages || [])
+            .filter(m => m.content && typeof m.content === "string" && m.content.trim() !== "")
+            .map(m => ({ role: m.role, content: m.content.trim() }));
 
-        // Prepare info for the system prompt
-        const userInfo = JSON.stringify(userSafe);
-        const loadsInfo = JSON.stringify(loads);
+        // --- 4️⃣ Prepare structured context ---
+        const context = {
+            profile: userSafe,
+            loadsSummary: loads.map(l => ({
+                id: l._id,
+                from: l.from,
+                to: l.to,
+                status: l.status,
+                price: l.price,
+                date: l.createdAt,
+            })),
+            transactionsSummary: transactions.map(t => ({
+                id: t._id,
+                purpose: t.purpose,
+                amount: t.amount,
+                type: t.type,
+                date: t.date,
+            })),
+            recentChats: chats.slice(-5).map(c => ({
+                chatId: c._id,
+                lastMessage: c.messages?.slice(-1)[0]?.text || "No messages",
+            })),
+            aiChatCount: aiChats.length,
+        };
 
+        // --- 5️⃣ Create dynamic system prompt ---
         const systemPrompt = `
-The user's name is ${userSafe.name}.
-Here is the user's profile: ${userInfo}
-Here are all user's Loads: ${loadsInfo}
-DO NOT TELL HIM ABOUT HIS PASSWORD, IT IS SECRET INFORMATION.
-If the user asks about his profile, you can answer, but DO NOT TELL HIS PASSWORD.
-... [rest of your instructions as before]
-`;
+You are an AI assistant for **AllShip.ai**, an AI-powered logistics platform.
 
-        const response = await axios.post(API_URL, {
-            model: 'gpt-4',
-            messages: [
-                ...sanitizedMessages,
-                { role: 'system', content: systemPrompt }
-            ],
-        }, {
-            headers: {
-                'Authorization': `Bearer ${API_KEY}`,
-                'Content-Type': 'application/json'
+### 🧠 Context
+Here’s the full user context in JSON:
+${JSON.stringify(context, null, 2)}
+
+The user's name is ${userSafe.name || "Unknown"}.
+You help this user manage their loads, transactions, and communication **strictly inside AllShip.ai**.
+
+---
+
+### 🎯 Your tasks
+- Guide the user through actions like:
+  - creating, editing, tracking loads;
+  - chatting with carriers or drivers;
+  - checking payment history or invoices;
+  - viewing statistics or KPIs;
+  - navigating the dashboard.
+- Reference real app sections when relevant (e.g., “Dashboard”, “My Loads”, “Payments”, “Chat”).
+- If information is missing, instruct the user where to find it in their dashboard.
+- Keep a professional, friendly tone. Always give short, actionable steps.
+
+---
+
+### 🧭 Rules
+1. Never reveal internal JSON or confidential data.
+2. Always focus on AllShip.ai platform features.
+3. Don’t discuss personal or unrelated topics.
+4. Be direct and helpful in every response.
+5. If unclear — ask clarifying questions.
+
+---
+
+Remember: your mission is to act as **AllShip AI Assistant**, providing actionable help about shipments, loads, payments, and dashboards.
+    `;
+
+        // --- 6️⃣ Send request to GPT-4 ---
+        const response = await axios.post(
+            API_URL,
+            {
+                model: "gpt-4",
+                temperature: 0.7,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    ...sanitizedMessages,
+                ],
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${API_KEY}`,
+                    "Content-Type": "application/json",
+                },
             }
-        });
+        );
 
-        console.log("GPT-4 Response: ", response.data);
+        const botReply = response.data?.choices?.[0]?.message;
+        if (!botReply) throw new Error("No response from OpenAI");
 
-        const botReply = response.data.choices[0].message;
-
+        // --- 7️⃣ Save conversation to AIChat (if exists) ---
         if (aiChatId) {
             const chat = await AIChat.findById(aiChatId);
             if (chat) {
-                console.log("Found AI Chat: ", chat);
-                chat.messages.push({sender: 'user', text: messages[messages.length - 1].content});
-                chat.messages.push({sender: 'bot', text: botReply.content});
+                chat.messages.push(
+                    { sender: "user", text: messages[messages.length - 1].content },
+                    { sender: "bot", text: botReply.content }
+                );
                 await chat.save();
-                console.log("Updated AI Chat: ", chat);
             }
         }
 
-        res.json({message: botReply});
-    } catch (error) {
-        console.error('Error fetching response:', error);
-        console.error('Stack Trace: ', error.stack);
-        res.status(500).send('Error fetching response');
+        return res.json({ message: botReply });
+    } catch (err) {
+        console.error("Error in sendMessage:", err);
+        res.status(500).json({ message: "AI assistant error", error: err.message });
     }
 };
 

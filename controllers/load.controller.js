@@ -528,13 +528,85 @@ async function confirmPayment(req, res) {
     }
 }
 
+const axios = require('axios');
+
+// 🔐 Додай у .env
+// ORS_API_KEY=5b3ce3597851110001cf6248xxxxxxxxxxxx
+
+const ORS_API_KEY = "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
+const distanceCache = new Map();
+
+// 🔹 Геокодування адреси (назва → координати)
+async function getCoordinatesORS(address) {
+    const encoded = encodeURIComponent(address);
+    const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encoded}&size=1`;
+
+    const res = await axios.get(url, { timeout: 6000 });
+    const feature = res.data?.features?.[0];
+    if (!feature) throw new Error(`No geocode result for "${address}"`);
+
+    const [lng, lat] = feature.geometry.coordinates;
+    return { lat, lng };
+}
+
+// 🔹 Основна функція для визначення відстані у милях
+const getDistanceMiles = async (from, to) => {
+    const cacheKey = `${from}_${to}`;
+    if (distanceCache.has(cacheKey)) return distanceCache.get(cacheKey);
+
+    let attempts = 0;
+    const maxAttempts = 3;
+
+    while (attempts < maxAttempts) {
+        try {
+            const origin = await getCoordinatesORS(from);
+            const destination = await getCoordinatesORS(to);
+
+            const body = {
+                locations: [
+                    [origin.lng, origin.lat],
+                    [destination.lng, destination.lat],
+                ],
+                metrics: ["distance"],
+                units: "m",
+            };
+
+            const url = `https://api.openrouteservice.org/v2/matrix/driving-car`;
+            const response = await axios.post(url, body, {
+                headers: {
+                    Authorization: ORS_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                timeout: 6000, // 6s timeout
+            });
+
+            const meters = response.data?.distances?.[0]?.[1];
+            if (!meters) throw new Error("Empty distance data");
+
+            // Мінімум 30 миль, щоб уникнути нереалістичних значень
+            const miles = Math.max(30, Math.round(meters / 1609.34));
+            distanceCache.set(cacheKey, miles);
+            return miles;
+        } catch (err) {
+            attempts++;
+            console.warn(`⚠️ Distance fetch failed (attempt ${attempts}/${maxAttempts}):`, err.message);
+            await new Promise((res) => setTimeout(res, 1200));
+        }
+    }
+
+    console.error(`❌ Distance API permanently failed for: ${from} → ${to}. Using fallback 50mi`);
+    return 50; // fallback
+};
+
+
 const createLoadFromCookie = async (req, res) => {
     try {
-        const {bookingData, userId, email} = req.body;
+        const { bookingData, userId, email } = req.body;
         if (!bookingData) {
-            return res.status(400).json({error: 'Missing bookingData'});
+            return res.status(400).json({ error: 'Missing bookingData' });
         }
 
+        // 🔹 Парсимо bookingData
         const parsed =
             typeof bookingData === 'string'
                 ? JSON.parse(decodeURIComponent(bookingData))
@@ -546,23 +618,51 @@ const createLoadFromCookie = async (req, res) => {
             pickupDate,
             deliveryDate,
             bedrooms,
-            fullPacking,
+            packingLevel,
             unpacking,
             storage,
-            chosenCarrier,
             storageAmount,
+            chosenCarrier,
             climateControlled,
             insurance,
             longTerm,
-            totalLoadPrice
+            totalLoadPrice,
         } = parsed;
 
+        // ✅ Перевірка мінімальних обов’язкових полів
+        if (!from || !to) {
+            return res.status(400).json({ error: 'Missing pickup or delivery location' });
+        }
+
+        // 1️⃣ Обчислення відстані між пунктами
+        const distance = await getDistanceMiles(from, to);
+
+        // 2️⃣ Визначення типу переїзду
+        const subType =
+            distance < 150
+                ? 'Local Moving (less than 150 miles)'
+                : 'Long Distance Moving';
+
+        // 🔹 Нормалізуємо рівень пакування (0–1)
+        let packingUnpackingServices = 0;
+        if (packingLevel) {
+            if (typeof packingLevel === 'string' && packingLevel.includes('%')) {
+                packingUnpackingServices = Number(packingLevel.replace('%', '')) / 100;
+            } else {
+                packingUnpackingServices = Number(packingLevel);
+            }
+        }
+
+        // 🔹 Нормалізуємо розпакування
+        const unpackingService = unpacking === 'Yes' || unpacking === true;
+
+        // 3️⃣ Унікальний хеш для унікальності замовлення
         const bookingHash = crypto
             .createHash('sha256')
             .update(JSON.stringify(parsed))
             .digest('hex');
 
-        const existingLoad = await Load.findOne({bookingHash});
+        const existingLoad = await Load.findOne({ bookingHash });
         if (existingLoad) {
             return res.status(200).json({
                 message: 'Load already exists for this booking',
@@ -571,30 +671,35 @@ const createLoadFromCookie = async (req, res) => {
             });
         }
 
-        const carrier = await User.findById(chosenCarrier);
+        // 4️⃣ Отримуємо користувачів
+        const carrier = chosenCarrier ? await User.findById(chosenCarrier) : null;
         const shipper = await User.findById(userId);
         const loadId = await generateLoadId();
 
+        // 5️⃣ Створюємо чат між shipper і carrier
         const newChat = new Chat({
-            carrierId: chosenCarrier,
+            carrierId: chosenCarrier || null,
             shipperId: userId,
             loadId,
             title: `Moving from ${from} to ${to}`,
-            subType: 'Long Distance Moving',
+            subType,
+            createdFrom: 'Moving Form',
             carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
-            shipperName: shipper?.name + shipper?.secondName || 'Unknown Shipper',
-            bidPrice: null,
+            shipperName:
+                shipper?.name && shipper?.secondName
+                    ? `${shipper.name} ${shipper.secondName}`
+                    : 'Unknown Shipper',
             chatHistory: [],
         });
-
         await newChat.save();
 
+        // 6️⃣ Формуємо документ Load
         const newLoad = new Load({
             userId,
             email,
             loadId,
             bookingHash,
-            subType: 'Long Distance Moving',
+            subType,
             title: `Moving from ${from} to ${to}`,
             status: 'Inactive',
             pickupLocation: from,
@@ -602,42 +707,51 @@ const createLoadFromCookie = async (req, res) => {
             pickupDate: pickupDate ? new Date(pickupDate) : new Date(),
             deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
             numberOfBedrooms: String(bedrooms || ''),
-            packingUnpackingServices: !!fullPacking,
-            unpacking: !!unpacking,
-            storageNeeds: !!storage,
-            totalLoadPrice: totalLoadPrice,
-            storageAmount,
-            climateControlled,
-            insurance,
-            longTerm,
+            packingUnpackingServices: packingUnpackingServices > 0,
+            packingLevel: packingUnpackingServices, // 🔹 значення 0–1
+            unpacking: unpackingService,
+            storageNeeds: Boolean(storage),
+            storageAmount: Number(storageAmount) || 0,
+            climateControlled: Boolean(climateControlled),
+            insurance: Boolean(insurance),
+            longTerm: Boolean(longTerm),
+            distance: Number(distance) || 0,
+            totalLoadPrice: Number(totalLoadPrice) || 0,
+            createdFrom: 'Moving Form',
             chosenCarrier: {
                 carrierCompanyName: carrier?.companyName || 'Unknown Carrier',
-                carrierId: chosenCarrier,
+                carrierId: chosenCarrier || null,
                 chatId: newChat._id.toString(),
             },
         });
 
         await newLoad.save();
-        await newLoad.save();
+
+        // 7️⃣ Надсилаємо лист підтвердження
         await sendEmail(
             email,
             'Your load has been created!',
-            `Your new load from ${from} to ${to} (ID: ${loadId}) has been created successfully.`
+            `Your new ${subType} load from ${from} to ${to} (ID: ${loadId}) has been created successfully.`
         );
+
+        console.log(`✅ New load created successfully: ${loadId}`);
 
         return res.status(201).json({
             message: 'Load and chat created successfully',
             loadId: newLoad._id,
             chatId: newChat._id,
+            subType,
+            distance,
         });
     } catch (error) {
         if (error.code === 11000 && error.keyPattern?.bookingHash) {
-            return res.status(200).json({message: 'Duplicate load', alreadyExists: true});
+            return res.status(200).json({ message: 'Duplicate load', alreadyExists: true });
         }
         console.error('[createLoadFromCookie]', error);
-        return res.status(500).json({error: 'Internal server error'});
+        return res.status(500).json({ error: 'Internal server error' });
     }
 };
+
 
 const activatePayedLoads = async () => {
     try {
@@ -658,6 +772,49 @@ const activatePayedLoads = async () => {
     }
 };
 
+const updateChosenCarrierAvatars = async () => {
+    console.log('🚀 Starting updateChosenCarrierAvatars cron job...');
+    try {
+        const loads = await Load.find({ 'chosenCarrier.carrierCompanyName': { $exists: true, $ne: null } });
+
+        let updatedCount = 0;
+
+        for (const load of loads) {
+            try {
+                const carrierName = load.chosenCarrier?.carrierCompanyName;
+                if (!carrierName) continue;
+
+                // Знаходимо користувача за companyName
+                const carrierUser = await User.findOne({ companyName: carrierName });
+                if (!carrierUser) {
+                    console.warn(`⚠️ Carrier not found for load ${load.loadId} (${carrierName})`);
+                    continue;
+                }
+
+                const avatarUrl = carrierUser.avatar;
+                if (!avatarUrl) {
+                    console.warn(`⚠️ Carrier ${carrierName} has no avatar, skipping...`);
+                    continue;
+                }
+
+                // Якщо в load ще нема аватарки або вона інша — оновлюємо
+                if (load.chosenCarrier.carrierAvatarUrl !== avatarUrl) {
+                    load.chosenCarrier.carrierAvatarUrl = avatarUrl;
+                    await load.save();
+                    updatedCount++;
+                    console.log(`✅ Updated load ${load.loadId} with avatar ${avatarUrl}`);
+                }
+            } catch (innerError) {
+                console.error('Error processing load:', load.loadId, innerError);
+            }
+        }
+
+        console.log(`🎯 updateChosenCarrierAvatars completed. Total updated: ${updatedCount}`);
+    } catch (error) {
+        console.error('❌ Error in updateChosenCarrierAvatars:', error);
+    }
+};
+
 module.exports = {
     createLoad,
     createBidPaymentSession,
@@ -665,6 +822,7 @@ module.exports = {
     payLoad,
     applyBid,
     getAllUserLoads,
+    updateChosenCarrierAvatars,
     getAllLoadsForCarriers,
     getLoadById,
     deleteLoadById,

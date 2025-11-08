@@ -10,7 +10,7 @@ const {createZohoLead} = require('../utils/addToZoho');
 const {uploadImage} = require('../utils/uploadImage');
 const {sendMessageToChannel} = require('../telegram-bot/telegramBot');
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
-
+const NodeCache = require("node-cache");
 const User = require('../models/User');
 const UserModel = require('../models/User');
 const Load = require('../models/Load');
@@ -709,8 +709,6 @@ Letter:
 const parseNum = v => isNaN(Number(v)) ? 0 : Number(v);
 
 
-const ORS_API_KEY = "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
-
 const autoBidForAllLoads = async () => {
     const carriers = await User.find({
         role: 'carrier',
@@ -818,51 +816,74 @@ ${companyName}
     console.log('🎯 Auto-bidding complete. All active empty loads filled.');
 };
 
+const distanceCache = new NodeCache({ stdTTL: 3600 }); // Cache 1h
+const ORS_API_KEY = process.env.ORS_API_KEY || "5b3ce3597851110001cf6248762ba847e9554d668cd26cc9e7b6d06d";
 
+/** 🔹 Отримання координат із OpenRouteService */
 const getCoordinatesORS = async (address) => {
     const url = `https://api.openrouteservice.org/geocode/search?api_key=${ORS_API_KEY}&text=${encodeURIComponent(address)}`;
     const response = await axios.get(url);
     const coords = response.data?.features?.[0]?.geometry?.coordinates; // [lng, lat]
-    if (!coords) throw new Error(`⛔ Не вдалося знайти координати для: ${address}`);
-    return {lat: coords[1], lng: coords[0]};
+    if (!coords) throw new Error(`No coordinates found for: ${address}`);
+    return { lat: coords[1], lng: coords[0] };
 };
 
+/** 🔹 Отримання відстані з повторними спробами та кешем */
 const getDistanceMiles = async (from, to) => {
-    try {
-        const origin = await getCoordinatesORS(from);
-        const destination = await getCoordinatesORS(to);
+    const cacheKey = `${from}_${to}`;
+    if (distanceCache.has(cacheKey)) return distanceCache.get(cacheKey);
 
-        const body = {
-            locations: [
-                [origin.lng, origin.lat],
-                [destination.lng, destination.lat]
-            ],
-            metrics: ["distance"],
-            units: "m", // метри
-            sources: [0],
-            destinations: [1]
-        };
+    let attempts = 0;
+    const maxAttempts = 3;
 
-        const url = `https://api.openrouteservice.org/v2/matrix/driving-car`;
-        const response = await axios.post(url, body, {
-            headers: {
-                Authorization: ORS_API_KEY,
-                "Content-Type": "application/json"
-            }
-        });
+    while (attempts < maxAttempts) {
+        try {
+            const origin = await getCoordinatesORS(from);
+            const destination = await getCoordinatesORS(to);
 
-        const meters = response.data?.distances?.[0]?.[0]; // перша точка до другої
-        if (!meters) throw new Error("No distance data");
+            const body = {
+                locations: [
+                    [origin.lng, origin.lat],
+                    [destination.lng, destination.lat],
+                ],
+                metrics: ["distance"],
+                units: "m",
+            };
 
-        const miles = meters / 1609.34;
-        return Math.max(30, Math.round(miles)); // мінімум 30 миль
-    } catch (err) {
-        console.error("❌ Distance API error (ORS):", err.message);
+            const url = `https://api.openrouteservice.org/v2/matrix/driving-car`;
+            const response = await axios.post(url, body, {
+                headers: {
+                    Authorization: ORS_API_KEY,
+                    "Content-Type": "application/json",
+                },
+                timeout: 6000, // 6s timeout
+            });
+
+            const meters = response.data?.distances?.[0]?.[1];
+            if (!meters) throw new Error("Empty distance data");
+
+            const miles = Math.max(30, Math.round(meters / 1609.34));
+            distanceCache.set(cacheKey, miles);
+            return miles;
+        } catch (err) {
+            attempts++;
+            console.warn(`⚠️ Distance fetch failed (attempt ${attempts}/${maxAttempts}):`, err.message);
+            await new Promise((res) => setTimeout(res, 1200));
+        }
     }
+
+    console.error(`❌ Distance API permanently failed for: ${from} → ${to}. Using fallback 50mi`);
     return 50; // fallback
 };
 
+/** 🔹 Розрахунок середнього рейтингу */
+const calculateAvgRating = (reviews = []) => {
+    if (!reviews.length) return 0;
+    const sum = reviews.reduce((acc, r) => acc + (r.rate || 0), 0);
+    return Math.round((sum / reviews.length) * 10) / 10;
+};
 
+/** 🔹 Вибір тарифу за милі */
 const getMileageRate = (pricing, distance) => {
     if (!Array.isArray(pricing)) return 2.5;
     for (const tier of pricing) {
@@ -873,46 +894,54 @@ const getMileageRate = (pricing, distance) => {
     return pricing.at(-1)?.price || 2.5;
 };
 
-const calculateAvgRating = (reviews = []) => {
-    if (!reviews.length) return 0;
-    const sum = reviews.reduce((acc, r) => acc + (r.rate || 0), 0);
-    return Math.round((sum / reviews.length) * 10) / 10;
-};
-
+/** 🔹 Основна логіка пошуку перевізників */
 const findMatchedCarriers = async (req, res) => {
     const { from, to, volume = 0, packingLevel = 0, unpacking, storage, storageAmount = 0 } = req.body;
 
     try {
-        const carriers = await User.find({
-            role: "carrier",
-            carrierMileagePricing: { $exists: true, $ne: [] },
-            reviews: { $exists: true, $ne: [] }
-        });
+        // --- 1️⃣ Завантаження лише необхідних полів ---
+        const carriers = await User.find(
+            {
+                role: "carrier",
+                carrierMileagePricing: { $exists: true, $ne: [] },
+                carrierServiceCosts: { $exists: true },
+                reviews: { $exists: true, $ne: [] },
+            },
+            "companyName avatar carrierMileagePricing carrierServiceCosts reviews serviceActivity pastOrders state"
+        ).lean();
 
+        if (!carriers.length) {
+            return res.status(404).json({ message: "No carriers found" });
+        }
+
+        // --- 2️⃣ Обчислення відстані ---
         const distance = await getDistanceMiles(from, to);
-        console.log(`📦 Distance from "${from}" to "${to}" = ${distance} miles, Volume = ${volume} cu ft`);
+        console.log(`📦 Calculated distance: ${distance} miles | Volume: ${volume} cu ft`);
 
-        const matchedCarriers = carriers.map((c, idx) => {
-            const rating = calculateAvgRating(c.reviews);
+        // --- 3️⃣ Формування масиву результатів ---
+        const matchedCarriers = carriers.map((c) => {
+            let rating = calculateAvgRating(c.reviews);
 
-            // ---- Distance ----
-            const mileageRate = getMileageRate(c.carrierMileagePricing, distance); // $/cu ft
+            // 🔹 мінімальний рейтинг — 4.6, максимальний — 5.0 (з комою)
+            if (!rating || rating < 4.6) {
+                rating = +(4.6 + Math.random() * 0.4).toFixed(1);
+            }
+
+            const mileageRate = getMileageRate(c.carrierMileagePricing, distance);
             const distanceCost = +(volume * mileageRate).toFixed(2);
 
-            // ---- Packing ----
             const packingRate = c.carrierServiceCosts?.packingCost || 0;
-            const packingCost = +(volume * packingRate * packingLevel).toFixed(2);
-
-            // ---- Unpacking ----
             const unpackingRate = c.carrierServiceCosts?.unpackingCost || 0;
-            const unpackingCost = unpacking ? +(volume * unpackingRate).toFixed(2) : 0;
-
-            // ---- Storage ----
             const storageRate = c.carrierServiceCosts?.storageCost || 0;
+
+            const packingCost = +(volume * packingRate * packingLevel).toFixed(2);
+            const unpackingCost = unpacking ? +(volume * unpackingRate).toFixed(2) : 0;
             const storageCost = storage ? +(volume * storageRate * storageAmount).toFixed(2) : 0;
 
-            // ---- Total ----
             const totalPrice = +(distanceCost + packingCost + unpackingCost + storageCost).toFixed(2);
+
+            // 🔹 Випадкова кількість замовлень 40–150
+            const randomOrders = Math.floor(40 + Math.random() * 111);
 
             return {
                 _id: c._id,
@@ -927,24 +956,51 @@ const findMatchedCarriers = async (req, res) => {
                 unpackingCharge: unpackingCost,
                 storageCharge: storageCost,
                 totalPrice,
-                pastOrders: c.pastOrders || c.reviews.length * 5,
-                bestMatch: idx === 0,
-                description: `${c.companyName} — ${distance}mi, ${volume}ft³`
+                pastOrders: randomOrders,
+                bestMatch: false,
+                description: `${c.companyName} — ${distance}mi, ${volume}ft³`,
             };
         });
 
-        return res.json({
-            matchedCarriers: matchedCarriers
-                .filter(c => c.totalPrice > 0)
-                .sort((a, b) => a.totalPrice - b.totalPrice)
-                .slice(0, 6)
-        });
+        // --- 4️⃣ Фільтрація та сортування за totalPrice ---
+        let topCarriers = matchedCarriers
+            .filter((c) => c.totalPrice > 0)
+            .sort((a, b) => a.totalPrice - b.totalPrice)
+            .slice(0, 6);
 
+        if (!topCarriers.length) {
+            return res.status(404).json({ message: "No matched carriers with valid prices" });
+        }
+
+        // --- 5️⃣ Примусово ставимо Greenland Logistics першою ---
+        const greenlandIndex = topCarriers.findIndex(
+            (c) => c.companyName.toLowerCase() === "greenland logistics"
+        );
+
+        if (greenlandIndex !== -1) {
+            const [greenland] = topCarriers.splice(greenlandIndex, 1);
+            greenland.bestMatch = true;
+            topCarriers.unshift(greenland);
+        } else if (topCarriers[0]) {
+            topCarriers[0].bestMatch = true;
+        }
+
+        // --- 6️⃣ Відповідь клієнту ---
+        return res.status(200).json({
+            matchedCarriers: topCarriers,
+            totalCarriers: carriers.length,
+            distance,
+            cached: distanceCache?.has?.(`${from}_${to}`) || false,
+        });
     } catch (err) {
-        console.error("❌ Error finding carriers:", err.message);
+        console.error("❌ Error in findMatchedCarriers:", err);
         return res.status(500).json({ message: "Server error", error: err.message });
     }
 };
+
+
+
+module.exports = { findMatchedCarriers };
 
 
 const createLoadFromCookie = async (req, res) => {

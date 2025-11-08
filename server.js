@@ -1,36 +1,55 @@
-require('dotenv').config();
-const express = require('express');
-const http = require('http');
-const mongoose = require('mongoose');
-const Chat = require('./models/Chat');
-const WebSocket = require('ws');
-const helmet = require('helmet');
-const cron = require('node-cron');
-const User = require('./models/User');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const authRoutes = require('./routes/auth.route');
-const userRoutes = require('./routes/user.route');
-const aiRoutes = require('./routes/ai.route');
-const loadRoutes = require('./routes/load.route');
-const chatRoutes = require('./routes/chat.route');
-const notificationsRoute = require('./routes/notifications.route');
+require("dotenv").config();
+const express = require("express");
+const http = require("http");
+const helmet = require("helmet");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const fileUpload = require("express-fileupload");
+const bodyParser = require("body-parser");
+const path = require("path");
+const WebSocket = require("ws");
+const cron = require("node-cron");
+
+// 🧱 Models
+const Chat = require("./models/Chat");
+
+// 🧠 Config
+const connectDB = require("./config/db");
+
+// 🛣️ Routes
+const authRoutes = require("./routes/auth.route");
+const userRoutes = require("./routes/user.route");
+const aiRoutes = require("./routes/ai.route");
+const loadRoutes = require("./routes/load.route");
+const chatRoutes = require("./routes/chat.route");
+const notificationsRoute = require("./routes/notifications.route");
+const adminRoutes = require("./routes/admin.route");
+
+// 🧠 Controllers (cron jobs)
+const {
+    fillCarrierReviews,
+    fillCarrierAbouts,
+    autoBidForAllLoads,
+} = require("./controllers/user.controller");
+const {
+    activatePayedLoads,
+    updateChosenCarrierAvatars,
+} = require("./controllers/load.controller");
+
+// 🚀 App setup
 const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 5000;
-const fileUpload = require("express-fileupload");
-const path = require("path");
-const {fillCarrierReviews, fillCarrierAbouts, autoBidForAllLoads} = require("./controllers/user.controller");
-const {activatePayedLoads} = require("./controllers/load.controller.js");
-app.use(express.json());
-app.use(express.urlencoded({extended: true}));
-app.use(fileUpload());
-app.use(express.json());
-app.use(bodyParser.json());
-app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
 
+// 🧩 Middleware
 app.use(helmet());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(bodyParser.json());
+app.use(fileUpload());
+app.use(cookieParser());
 
+// 🌍 CORS
 const allowedOrigins = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -38,95 +57,83 @@ const allowedOrigins = [
     "https://www.allship.ai",
     "https://dashboard.allship.ai",
     "https://www.dashboard.allship.ai",
-    "*"
 ];
 
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin && allowedOrigins.includes(origin)) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Access-Control-Allow-Credentials", "true");
-        res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
-    }
+app.use(
+    cors({
+        origin: allowedOrigins,
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+    })
+);
 
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(200);
-    }
+// 🖼️ Static Files
+app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
 
-    next();
-});
+// 🛣️ Routes
+app.get("/", (req, res) => res.send("🚀 AllShipAI backend is running!"));
+app.use("/auth", authRoutes);
+app.use("/user", userRoutes);
+app.use("/ai", aiRoutes);
+app.use("/load", loadRoutes);
+app.use("/chat", chatRoutes);
+app.use("/admin", adminRoutes);
+app.use("/notifications", notificationsRoute);
 
-/*const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 1000,
-});
+// 💬 WebSocket Chat
+let wss;
+(async () => {
+    try {
+        await connectDB();
+        console.log("✅ MongoDB connected.");
 
-app.use(limiter);*/
+        server.listen(port, () => console.log(`🚀 Server on port ${port}`));
 
-const wss = new WebSocket.Server({server});
+        wss = new WebSocket.Server({ server });
+        console.log("💬 WebSocket initialized");
 
-mongoose.connect("mongodb+srv://yaroslavtsarenko:qlKClTLv1d7rUCOR@allshipai-db.zrjqe.mongodb.net/?retryWrites=true&w=majority&appName=allshipai-db", {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-}).then(() => {
-    console.log('MongoDB connected✅ ');
-}).catch(err => console.log(err));
+        wss.on("connection", (ws) => {
+            ws.on("message", async (message) => {
+                try {
+                    const { chatId, carrierId, shipperId, messageText } = JSON.parse(message);
+                    if (!chatId || !messageText) return;
 
-app.get('/', (req, res) => {
-    res.send('Server is live!');
-});
+                    const chat = await Chat.findById(chatId);
+                    if (!chat) return console.error("Chat not found:", chatId);
 
-wss.on('connection', (ws) => {
-    ws.on('message', async (message) => {
-        const parsedMessage = JSON.parse(message);
-        const {chatId, carrierId, shipperId, messageText} = parsedMessage;
+                    const newMessage = { carrierId, shipperId, message: messageText, createdAt: new Date() };
+                    chat.chatHistory.push(newMessage);
+                    await chat.save();
 
-        if (!mongoose.Types.ObjectId.isValid(chatId)) {
-            console.error('Invalid chatId:', chatId);
-            return;
-        }
-
-        const chat = await Chat.findById(chatId);
-        if (chat) {
-            const newMessage = {
-                carrierId,
-                shipperId,
-                message: messageText,
-                createdAt: new Date(),
-            };
-            chat.chatHistory.push(newMessage);
-            await chat.save();
-
-            wss.clients.forEach((client) => {
-                if (client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify(newMessage));
+                    wss.clients.forEach((client) => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify(newMessage));
+                        }
+                    });
+                } catch (err) {
+                    console.error("WebSocket error:", err.message);
                 }
             });
-        } else {
-            console.error('Chat not found for chatId:', chatId);
-        }
-    });
-});
+        });
 
-cron.schedule('*/2 * * * *', async () => {
-    await activatePayedLoads()
-});
-
-cron.schedule('*/1 * * * *', async () => {
-    await fillCarrierReviews();
-    await fillCarrierAbouts();
-    await autoBidForAllLoads();
-});
-
-app.use('/auth', authRoutes);
-app.use('/user', userRoutes);
-app.use('/ai', aiRoutes);
-app.use('/load', loadRoutes);
-app.use('/chat', chatRoutes);
-app.use('/notifications', notificationsRoute);
-
-server.listen(port, () => {
-    console.log(`Server running on port ${port}✅ `);
-});
+        // 🕒 CRON Jobs
+        cron.schedule("*/1 * * * *", async () => {
+            try {
+                await Promise.all([
+                    fillCarrierReviews(),
+                    fillCarrierAbouts(),
+                    autoBidForAllLoads(),
+                    activatePayedLoads(),
+                    updateChosenCarrierAvatars(),
+                ]);
+                console.log("✅ CRON executed successfully");
+            } catch (err) {
+                console.error("❌ CRON error:", err.message);
+            }
+        });
+    } catch (err) {
+        console.error("❌ Failed to start server:", err.message);
+        process.exit(1);
+    }
+})();
