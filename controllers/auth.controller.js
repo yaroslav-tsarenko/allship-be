@@ -176,7 +176,11 @@ const login = async (req, res) => {
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
         setAuthCookie(res, token);
 
-        return res.status(200).json({ message: "Login successful", userId: user._id });
+        return res.status(200).json({
+            message: "Login successful",
+            token,
+            userId: user._id,
+        });
     } catch (error) {
         console.error("❌ Login error:", error);
         return res.status(500).json({ message: "Server error", error: error.message });
