@@ -1,4 +1,3 @@
-// controllers/auth.controller.js
 const { validationResult } = require("express-validator");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -12,16 +11,16 @@ const isProd = process.env.NODE_ENV === "production";
 const getCookieBaseOptions = () => {
     const host = process.env.HOST || "";
     const looksLikeProd = isProd || host.includes("render") || host.includes("allship.ai");
-
     const base = {
         httpOnly: true,
         secure: looksLikeProd, // Ensure secure:true when sameSite is 'none'
         sameSite: looksLikeProd ? 'none' : 'lax', // Only 'none', 'lax', or 'strict' are valid
         path: "/",
     };
-
+    if (looksLikeProd && base.sameSite === 'none') {
+        base.secure = true; // Enforce secure:true for sameSite: 'none'
+    }
     if (looksLikeProd) base.domain = ".allship.ai";
-
     return base;
 };
 
