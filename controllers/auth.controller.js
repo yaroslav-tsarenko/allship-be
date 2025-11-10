@@ -10,15 +10,27 @@ const isProd = process.env.NODE_ENV === "production";
 
 /** 🔧 Helper — безпечна установка cookie */
 const setAuthCookie = (res, token) => {
-    res.cookie("token", token, {
+    const isProd = process.env.NODE_ENV === "production";
+
+    // Якщо Render або HTTP, sameSite= 'lax'
+    const cookieOptions = {
         httpOnly: true,
-        secure: isProd, // обов’язково лише на проді
-        sameSite: isProd ? "none" : "lax",
-        domain: isProd ? ".allship.ai" : undefined,
         path: "/",
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
-    });
+    };
+
+    if (isProd) {
+        cookieOptions.secure = true;
+        cookieOptions.sameSite = "none";
+        cookieOptions.domain = ".allship.ai";
+    } else {
+        cookieOptions.secure = false;
+        cookieOptions.sameSite = "lax";
+    }
+
+    res.cookie("token", token, cookieOptions);
 };
+
 
 /** 🔹 Генератор 6-значного коду підтвердження */
 const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
