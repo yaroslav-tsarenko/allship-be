@@ -9,15 +9,14 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-key";
 const isProd = process.env.NODE_ENV === "production";
 
-/** ✅ Уніфікатор cookie-опцій, щоб sameSite НІКОЛИ не був невалідним */
 const getCookieBaseOptions = () => {
     const host = process.env.HOST || "";
     const looksLikeProd = isProd || host.includes("render") || host.includes("allship.ai");
 
     const base = {
         httpOnly: true,
-        secure: looksLikeProd,           // якщо SameSite=None → мусить бути secure:true
-        sameSite: looksLikeProd ? 'none' : 'lax', // тільки 'none'|'lax'|'strict'
+        secure: looksLikeProd, // Ensure secure:true when sameSite is 'none'
+        sameSite: looksLikeProd ? 'none' : 'lax', // Only 'none', 'lax', or 'strict' are valid
         path: "/",
     };
 
