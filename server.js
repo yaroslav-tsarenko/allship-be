@@ -49,7 +49,6 @@ app.use(bodyParser.json());
 app.use(fileUpload());
 app.use(cookieParser());
 
-// 🌍 CORS
 const allowedOrigins = [
     "http://localhost:3000",
     "http://localhost:3001",
@@ -61,12 +60,21 @@ const allowedOrigins = [
 
 app.use(
     cors({
-        origin: allowedOrigins,
+        origin: function (origin, callback) {
+            if (!origin || allowedOrigins.includes(origin)) {
+                callback(null, true);
+            } else {
+                console.log("❌ Blocked by CORS:", origin);
+                callback(new Error("Not allowed by CORS"));
+            }
+        },
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],
     })
 );
+
+app.options("*", cors()); // дозволяє preflight
 
 // 🖼️ Static Files
 app.use("/images/avatars", express.static(path.join(__dirname, "images", "avatars")));
