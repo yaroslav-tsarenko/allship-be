@@ -5,14 +5,23 @@ const User = require("../models/User");
 const sendEmail = require("../utils/sendEmail");
 require("dotenv").config();
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) {
-    console.warn("⚠️  Missing JWT_SECRET in .env — using fallback key");
-}
+const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-key";
+const isProd = process.env.NODE_ENV === "production";
+
+/** 🔧 Helper — безпечна установка cookie */
+const setAuthCookie = (res, token) => {
+    res.cookie("token", token, {
+        httpOnly: true,
+        secure: isProd, // обов’язково лише на проді
+        sameSite: isProd ? "none" : "lax",
+        domain: isProd ? ".allship.ai" : undefined,
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
+    });
+};
 
 /** 🔹 Генератор 6-значного коду підтвердження */
-const generateCode = () =>
-    Math.floor(100000 + Math.random() * 900000).toString();
+const generateCode = () => Math.floor(100000 + Math.random() * 900000).toString();
 
 /** 🔹 REGISTER (з підтвердженням через email) */
 const registerAndAuth = async (req, res) => {
@@ -20,7 +29,7 @@ const registerAndAuth = async (req, res) => {
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        console.warn("⚠️  Validation errors:", errors.array());
+        console.warn("⚠️ Validation errors:", errors.array());
         return res.status(400).json({ errors: errors.array() });
     }
 
@@ -30,7 +39,7 @@ const registerAndAuth = async (req, res) => {
         console.log(`🔍 Checking if user exists: ${email}`);
         const existingUser = await User.findOne({ email });
         if (existingUser) {
-            console.warn(`⚠️  User with email ${email} already exists`);
+            console.warn(`⚠️ User with email ${email} already exists`);
             return res.status(400).json({ message: "User already exists" });
         }
 
@@ -38,7 +47,7 @@ const registerAndAuth = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const verificationCode = generateCode();
-        const verificationCodeExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 min TTL
+        const verificationCodeExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 хв TTL
 
         console.log(`✅ Generated code: ${verificationCode}`);
 
@@ -56,7 +65,7 @@ const registerAndAuth = async (req, res) => {
         await newUser.save();
         console.log("💾 User saved to DB:", newUser._id);
 
-        // Надсилаємо емейл
+        // 📧 Надсилання листа
         const htmlContent = `
       <h2>Welcome, ${name}!</h2>
       <p>To verify your AllShipAI account, please use this code:</p>
@@ -67,7 +76,6 @@ const registerAndAuth = async (req, res) => {
     `;
 
         await sendEmail(email, "Verify your AllShipAI account 🚀", htmlContent);
-
         console.log(`📨 Verification email sent to ${email}`);
 
         return res.status(201).json({
@@ -103,28 +111,18 @@ const verifyCode = async (req, res) => {
         await user.save();
 
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
-
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            domain: process.env.NODE_ENV === "production" ? ".allship.ai" : undefined,
-            path: "/",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        setAuthCookie(res, token);
 
         return res.status(200).json({
             message: "Verification successful",
             token,
             userId: user._id,
         });
-
     } catch (error) {
         console.error("❌ Verification error:", error);
         return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
-
 
 /** 🔹 LOGIN */
 const login = async (req, res) => {
@@ -132,7 +130,6 @@ const login = async (req, res) => {
 
     try {
         const { email, password } = req.body;
-
         const user = await User.findOne({ email });
         if (!user) {
             console.warn("❌ Invalid email:", email);
@@ -147,26 +144,17 @@ const login = async (req, res) => {
         }
 
         if (!user.verificated) {
-            console.warn("⚠️  Email not verified:", email);
+            console.warn("⚠️ Email not verified:", email);
             return res.status(403).json({ error: "Email not verified" });
         }
 
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
-
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            domain: process.env.NODE_ENV === "production" ? ".allship.ai" : undefined,
-            path: "/",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        setAuthCookie(res, token);
 
         return res.status(200).json({
             message: "Login successful",
             userId: user._id,
         });
-
     } catch (error) {
         console.error("❌ Login error:", error);
         return res.status(500).json({ message: "Server error", error: error.message });
@@ -176,16 +164,22 @@ const login = async (req, res) => {
 /** 🔹 LOGOUT */
 const logout = (req, res) => {
     console.log("👋 [LOGOUT]");
-    res.clearCookie("token", { path: "/" });
+    res.clearCookie("token", {
+        path: "/",
+        domain: isProd ? ".allship.ai" : undefined,
+        sameSite: isProd ? "none" : "lax",
+        secure: isProd,
+    });
     return res.status(200).json({ message: "Logged out successfully" });
 };
 
-/** 🔹 Register wrapper (для сумісності зі старими роутами) */
+/** 🔹 Register wrapper */
 const register = async (req, res) => {
     console.log("🔁 [REGISTER] Delegating to registerAndAuth()");
     return registerAndAuth(req, res);
 };
 
+/** 🔹 FORGOT PASSWORD */
 const forgotPassword = async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email is required" });
@@ -194,18 +188,14 @@ const forgotPassword = async (req, res) => {
         const user = await User.findOne({ email });
         if (!user) {
             console.warn("⚠️ Email not found:", email);
-            return res.status(404).json({ message: "User not found" }); // <-- зміна
+            return res.status(404).json({ message: "User not found" });
         }
 
-        const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, {
-            expiresIn: "15m",
-        });
-
+        const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "15m" });
         user.resetPasswordToken = resetToken;
         user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
         await user.save();
 
-        const isProd = process.env.NODE_ENV === "production";
         const resetLink = `${isProd ? "https://allship.ai" : "http://localhost:3000"}/reset-password/${resetToken}`;
 
         const html = `
@@ -220,10 +210,11 @@ const forgotPassword = async (req, res) => {
         return res.status(200).json({ message: "Reset link sent successfully" });
     } catch (error) {
         console.error("❌ forgotPassword error:", error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
+/** 🔹 RESET PASSWORD */
 const resetPassword = async (req, res) => {
     const { token } = req.params;
     const { password } = req.body;
@@ -253,7 +244,7 @@ const resetPassword = async (req, res) => {
         return res.status(200).json({ message: "Password successfully changed" });
     } catch (error) {
         console.error("❌ resetPassword error:", error);
-        res.status(500).json({ message: "Server error" });
+        res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
@@ -264,5 +255,5 @@ module.exports = {
     login,
     logout,
     resetPassword,
-    forgotPassword
+    forgotPassword,
 };
