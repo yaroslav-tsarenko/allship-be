@@ -8,30 +8,61 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-key";
 const isProd = process.env.NODE_ENV === "production";
 
+/** ✅ 100% безпечний варіант getCookieOptions */
 const getCookieBaseOptions = () => {
-    const host = process.env.HOST || "";
-    const looksLikeProd = isProd || host.includes("render") || host.includes("allship.ai");
-    const base = {
+    let sameSite = "lax";
+    let secure = false;
+    let domain;
+
+    try {
+        const host = (process.env.HOST || "").toLowerCase();
+        const looksLikeProd =
+            isProd || host.includes("render") || host.includes("allship.ai");
+
+        sameSite = looksLikeProd ? "none" : "lax";
+        secure = looksLikeProd;
+        if (looksLikeProd) domain = ".allship.ai";
+
+        // 👇 костиль №1 — гарантуємо, що sameSite завжди валідний стрінг
+        if (!["none", "lax", "strict"].includes(String(sameSite))) {
+            console.warn("⚠️ Invalid sameSite detected, forcing 'lax'");
+            sameSite = "lax";
+        }
+
+        // 👇 костиль №2 — якщо sameSite='none', secure має бути true
+        if (sameSite === "none" && !secure) {
+            console.warn("⚠️ sameSite=none without secure — fixing it");
+            secure = true;
+        }
+    } catch (e) {
+        console.error("⚠️ Cookie config fallback:", e);
+        sameSite = "lax";
+        secure = false;
+    }
+
+    return {
         httpOnly: true,
-        secure: looksLikeProd, // Ensure secure:true when sameSite is 'none'
-        sameSite: looksLikeProd ? 'none' : 'lax', // Only 'none', 'lax', or 'strict' are valid
+        secure,
+        sameSite,
+        domain,
         path: "/",
     };
-    if (looksLikeProd && base.sameSite === 'none') {
-        base.secure = true; // Enforce secure:true for sameSite: 'none'
-    }
-    if (looksLikeProd) base.domain = ".allship.ai";
-    return base;
 };
 
-/** 🔧 Встановлення cookie з токеном */
+/** 🔧 Встановлення cookie з токеном (з try/catch) */
 const setAuthCookie = (res, token) => {
     const base = getCookieBaseOptions();
-    res.cookie("token", token, {
-        ...base,
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
-    });
+    try {
+        res.cookie("token", token, {
+            ...base,
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
+        });
+        console.log(`🍪 Cookie set successfully: sameSite=${base.sameSite}, secure=${base.secure}`);
+    } catch (err) {
+        console.error("❌ setAuthCookie failed:", err.message);
+    }
 };
+
 
 /** 🔹 Генератор 6-значного коду підтвердження */
 const generateCode = () =>
