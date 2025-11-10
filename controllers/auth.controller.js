@@ -1,3 +1,4 @@
+// controllers/auth.controller.js
 const { validationResult } = require("express-validator");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -8,29 +9,28 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-key";
 const isProd = process.env.NODE_ENV === "production";
 
-/** 🔧 Безпечне встановлення cookie (Render-friendly) */
-const setAuthCookie = (res, token) => {
-    let sameSite = "lax";
-    let secure = false;
-    let domain = undefined;
-
-    // Render часто працює через HTTPS, але без strict production env
+/** ✅ Уніфікатор cookie-опцій, щоб sameSite НІКОЛИ не був невалідним */
+const getCookieBaseOptions = () => {
     const host = process.env.HOST || "";
-    const looksLikeProd =
-        isProd || host.includes("render") || host.includes("allship.ai");
+    const looksLikeProd = isProd || host.includes("render") || host.includes("allship.ai");
 
-    if (looksLikeProd) {
-        sameSite = "none";
-        secure = true;
-        domain = ".allship.ai";
-    }
-
-    res.cookie("token", token, {
+    const base = {
         httpOnly: true,
-        secure,
-        sameSite,
-        domain,
+        secure: looksLikeProd,           // якщо SameSite=None → мусить бути secure:true
+        sameSite: looksLikeProd ? 'none' : 'lax', // тільки 'none'|'lax'|'strict'
         path: "/",
+    };
+
+    if (looksLikeProd) base.domain = ".allship.ai";
+
+    return base;
+};
+
+/** 🔧 Встановлення cookie з токеном */
+const setAuthCookie = (res, token) => {
+    const base = getCookieBaseOptions();
+    res.cookie("token", token, {
+        ...base,
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
     });
 };
@@ -80,6 +80,7 @@ const registerAndAuth = async (req, res) => {
       <p>This code is valid for 15 minutes.</p>
     `;
 
+        // третій аргумент — text; ми підхоплюємо його як html (див. utils/sendEmail)
         await sendEmail(email, "Verify your AllShipAI account 🚀", htmlContent);
 
         return res.status(201).json({
@@ -89,9 +90,7 @@ const registerAndAuth = async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Error in registerAndAuth:", error);
-        return res
-            .status(500)
-            .json({ message: "Server error", error: error.message });
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
@@ -114,9 +113,7 @@ const verifyCode = async (req, res) => {
         user.verificationCodeExpires = null;
         await user.save();
 
-        const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
-            expiresIn: "7d",
-        });
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
         setAuthCookie(res, token);
 
         return res.status(200).json({
@@ -126,9 +123,7 @@ const verifyCode = async (req, res) => {
         });
     } catch (error) {
         console.error("❌ Verification error:", error);
-        return res
-            .status(500)
-            .json({ message: "Server error", error: error.message });
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
@@ -149,35 +144,30 @@ const login = async (req, res) => {
         if (!user.verificated)
             return res.status(403).json({ error: "Email not verified" });
 
-        const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
-            expiresIn: "7d",
-        });
+        const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "7d" });
         setAuthCookie(res, token);
 
-        return res
-            .status(200)
-            .json({ message: "Login successful", userId: user._id });
+        return res.status(200).json({ message: "Login successful", userId: user._id });
     } catch (error) {
         console.error("❌ Login error:", error);
-        return res
-            .status(500)
-            .json({ message: "Server error", error: error.message });
+        return res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
 /** 🔹 LOGOUT */
 const logout = (req, res) => {
     console.log("👋 [LOGOUT]");
+    const base = getCookieBaseOptions();
+
     res.clearCookie("token", {
-        path: "/",
-        domain: isProd ? ".allship.ai" : undefined,
-        sameSite: isProd ? "none" : "lax",
-        secure: isProd,
+        ...base,
+        // clearCookie ігнорує maxAge/expires, але лишаємо узгоджені опції
     });
+
     return res.status(200).json({ message: "Logged out successfully" });
 };
 
-/** 🔹 Register wrapper */
+/** 🔹 Register wrapper (залишаємо як окремий експорт/роут при потребі) */
 const register = async (req, res) => {
     console.log("🔁 [REGISTER] Delegating to registerAndAuth()");
     return registerAndAuth(req, res);
@@ -192,9 +182,7 @@ const forgotPassword = async (req, res) => {
         const user = await User.findOne({ email });
         if (!user) return res.status(404).json({ message: "User not found" });
 
-        const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, {
-            expiresIn: "15m",
-        });
+        const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: "15m" });
         user.resetPasswordToken = resetToken;
         user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
         await user.save();
@@ -209,7 +197,9 @@ const forgotPassword = async (req, res) => {
       <a href="${resetLink}" style="font-size:18px;color:#2563eb;">Reset Password</a>
     `;
 
+        // тут теж третій аргумент — як text; шаблон підхопить його в html
         await sendEmail(user.email, "Reset Your AllShipAI Password", html);
+
         return res.status(200).json({ message: "Reset link sent successfully" });
     } catch (error) {
         console.error("❌ forgotPassword error:", error);
@@ -250,8 +240,8 @@ const resetPassword = async (req, res) => {
 };
 
 module.exports = {
-    register,
-    registerAndAuth,
+    register,          // wrapper
+    registerAndAuth,   // основний реєстраційний
     verifyCode,
     login,
     logout,
