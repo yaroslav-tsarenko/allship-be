@@ -1,22 +1,8 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const sendEmail = async (to, subject, text = '', attachments = [], htmlContent = '') => {
     console.log(`📧 [sendEmail] Preparing to send to: ${to} | Subject: ${subject}`);
-
-    const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
-        port: 587,
-        secure: false,
-        auth: {
-            user: process.env.MAIL_USER || 'noreply@allship.ai',
-            pass: process.env.MAIL_PASS || 'roaz hpgr ltua isva',
-        },
-        tls: {
-            rejectUnauthorized: false,
-        },
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-    });
 
     const html = `
     <html>
@@ -58,10 +44,24 @@ const sendEmail = async (to, subject, text = '', attachments = [], htmlContent =
     };
 
     try {
-        const info = await transporter.sendMail(mailOptions);
-        console.log(`✅ Email sent successfully to ${to}: ${info.response}`);
+        const response = await resend.emails.send({
+            from: mailOptions.from,
+            to: Array.isArray(to) ? to : [to],
+            subject: mailOptions.subject,
+            text: mailOptions.text,
+            html: mailOptions.html,
+            attachments: attachments?.length
+                ? attachments.map(file => ({
+                    filename: file.filename || 'attachment',
+                    content: file.content,
+                    type: file.type || 'application/octet-stream',
+                }))
+                : undefined,
+        });
+
+        console.log(`✅ Email sent successfully to ${to}: ${response?.data?.id || 'OK'}`);
     } catch (error) {
-        console.error('❌ Error sending email:', error);
+        console.error('❌ Error sending email via Resend:', error);
     }
 };
 

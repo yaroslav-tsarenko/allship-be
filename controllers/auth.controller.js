@@ -8,43 +8,41 @@ require("dotenv").config();
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-key";
 const isProd = process.env.NODE_ENV === "production";
 
-/** ✅ Абсолютно безпечна установка cookie */
+/** 🔧 Безпечне встановлення cookie (Render-friendly) */
 const setAuthCookie = (res, token) => {
-    try {
-        const host = process.env.HOST || "";
-        const looksLikeProd =
-            isProd || host.includes("render") || host.includes("allship.ai");
+    let sameSite = "lax";
+    let secure = false;
+    let domain = undefined;
 
-        // ⚙️ Стандартні параметри
-        const cookieOptions = {
-            httpOnly: true,
-            path: "/",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        };
+    // Render часто працює через HTTPS, але без strict production env
+    const host = process.env.HOST || "";
+    const looksLikeProd =
+        isProd || host.includes("render") || host.includes("allship.ai");
 
-        // 🟢 Для продакшену / Render / HTTPS
-        if (looksLikeProd) {
-            cookieOptions.secure = true;
-            cookieOptions.sameSite = "None"; // ключ: "None" з великої літери
-            cookieOptions.domain = ".allship.ai";
-        } else {
-            // 🟠 Для локалки
-            cookieOptions.secure = false;
-            cookieOptions.sameSite = "Lax";
-        }
-
-        res.cookie("token", token, cookieOptions);
-    } catch (err) {
-        console.error("⚠️ Cookie setup failed:", err.message);
+    if (looksLikeProd) {
+        sameSite = "none";
+        secure = true;
+        domain = ".allship.ai";
     }
+
+    res.cookie("token", token, {
+        httpOnly: true,
+        secure,
+        sameSite,
+        domain,
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 днів
+    });
 };
 
-/** 🔹 Генератор 6-значного коду */
+/** 🔹 Генератор 6-значного коду підтвердження */
 const generateCode = () =>
     Math.floor(100000 + Math.random() * 900000).toString();
 
-/** 🔹 REGISTER */
+/** 🔹 REGISTER (з підтвердженням через email) */
 const registerAndAuth = async (req, res) => {
+    console.log("📩 [REGISTER] Incoming request body:", req.body);
+
     const errors = validationResult(req);
     if (!errors.isEmpty())
         return res.status(400).json({ errors: errors.array() });
@@ -73,23 +71,27 @@ const registerAndAuth = async (req, res) => {
 
         await newUser.save();
 
-        const html = `
+        const htmlContent = `
       <h2>Welcome, ${name}!</h2>
-      <p>To verify your AllShipAI account, use this code:</p>
-      <div style="font-size:28px;font-weight:bold;color:#2563eb;">${verificationCode}</div>
+      <p>To verify your AllShipAI account, please use this code:</p>
+      <div style="font-size:28px;font-weight:bold;color:#2563eb;margin:12px 0;">
+        ${verificationCode}
+      </div>
       <p>This code is valid for 15 minutes.</p>
     `;
 
-        await sendEmail(email, "Verify your AllShipAI account 🚀", html);
+        await sendEmail(email, "Verify your AllShipAI account 🚀", htmlContent);
 
-        res.status(201).json({
+        return res.status(201).json({
             message: "User registered successfully, verification required",
             userId: newUser._id,
             email,
         });
     } catch (error) {
-        console.error("❌ registerAndAuth:", error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error("❌ Error in registerAndAuth:", error);
+        return res
+            .status(500)
+            .json({ message: "Server error", error: error.message });
     }
 };
 
@@ -115,17 +117,18 @@ const verifyCode = async (req, res) => {
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
             expiresIn: "7d",
         });
-
         setAuthCookie(res, token);
 
-        res.status(200).json({
+        return res.status(200).json({
             message: "Verification successful",
             token,
             userId: user._id,
         });
     } catch (error) {
-        console.error("❌ verifyCode:", error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error("❌ Verification error:", error);
+        return res
+            .status(500)
+            .json({ message: "Server error", error: error.message });
     }
 };
 
@@ -149,47 +152,46 @@ const login = async (req, res) => {
         const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
             expiresIn: "7d",
         });
+        setAuthCookie(res, token);
 
-        // 👇 Якщо навіть тут щось піде не так, воно не впаде
-        try {
-            setAuthCookie(res, token);
-        } catch (err) {
-            console.warn("⚠️ Cookie error suppressed:", err.message);
-        }
-
-        res.status(200).json({
-            message: "Login successful",
-            userId: user._id,
-        });
+        return res
+            .status(200)
+            .json({ message: "Login successful", userId: user._id });
     } catch (error) {
         console.error("❌ Login error:", error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        return res
+            .status(500)
+            .json({ message: "Server error", error: error.message });
     }
 };
 
 /** 🔹 LOGOUT */
 const logout = (req, res) => {
     console.log("👋 [LOGOUT]");
-    try {
-        res.clearCookie("token", {
-            path: "/",
-            sameSite: "None",
-            secure: true,
-            domain: ".allship.ai",
-        });
-    } catch (err) {
-        console.warn("⚠️ Logout cookie clear failed:", err.message);
-    }
+    res.clearCookie("token", {
+        path: "/",
+        domain: isProd ? ".allship.ai" : undefined,
+        sameSite: isProd ? "none" : "lax",
+        secure: isProd,
+    });
     return res.status(200).json({ message: "Logged out successfully" });
 };
 
-/** 🔹 Інші ендпоінти (password reset etc.) */
+/** 🔹 Register wrapper */
+const register = async (req, res) => {
+    console.log("🔁 [REGISTER] Delegating to registerAndAuth()");
+    return registerAndAuth(req, res);
+};
+
+/** 🔹 FORGOT PASSWORD */
 const forgotPassword = async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email is required" });
+
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(404).json({ message: "User not found" });
+
         const resetToken = jwt.sign({ userId: user._id }, JWT_SECRET, {
             expiresIn: "15m",
         });
@@ -206,19 +208,53 @@ const forgotPassword = async (req, res) => {
       <p>Click below to reset your password (valid for 15 minutes):</p>
       <a href="${resetLink}" style="font-size:18px;color:#2563eb;">Reset Password</a>
     `;
-        await sendEmail(user.email, "Reset Your AllShipAI Password", html);
 
-        res.status(200).json({ message: "Reset link sent successfully" });
+        await sendEmail(user.email, "Reset Your AllShipAI Password", html);
+        return res.status(200).json({ message: "Reset link sent successfully" });
     } catch (error) {
         console.error("❌ forgotPassword error:", error);
         res.status(500).json({ message: "Server error", error: error.message });
     }
 };
 
+/** 🔹 RESET PASSWORD */
+const resetPassword = async (req, res) => {
+    const { token } = req.params;
+    const { password } = req.body;
+    if (!token || !password)
+        return res.status(400).json({ message: "Token and password required" });
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await User.findById(decoded.userId);
+        if (!user) return res.status(400).json({ message: "User not found" });
+
+        if (
+            !user.resetPasswordToken ||
+            user.resetPasswordToken !== token ||
+            new Date(user.resetPasswordExpires).getTime() < Date.now()
+        ) {
+            return res.status(400).json({ message: "Token expired or invalid" });
+        }
+
+        user.password = await bcrypt.hash(password, 10);
+        user.resetPasswordToken = null;
+        user.resetPasswordExpires = null;
+        await user.save();
+
+        return res.status(200).json({ message: "Password successfully changed" });
+    } catch (error) {
+        console.error("❌ resetPassword error:", error);
+        res.status(500).json({ message: "Server error", error: error.message });
+    }
+};
+
 module.exports = {
+    register,
     registerAndAuth,
     verifyCode,
     login,
     logout,
+    resetPassword,
     forgotPassword,
 };
