@@ -14,6 +14,8 @@ const sendEmail = async (to, subject, text = '', attachments = [], htmlContent =
         tls: {
             rejectUnauthorized: false,
         },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
     });
 
     // 🔹 Обгортаємо в AllShipAI шаблон
