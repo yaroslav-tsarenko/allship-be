@@ -9,7 +9,7 @@ const sendEmail = async (to, subject, text = '', attachments = [], htmlContent =
         secure: false,
         auth: {
             user: process.env.MAIL_USER || 'noreply@allship.ai',
-            pass: process.env.MAIL_PASS || 'roaz hpgr ltua isva', // app password
+            pass: process.env.MAIL_PASS || 'roaz hpgr ltua isva',
         },
         tls: {
             rejectUnauthorized: false,
@@ -18,7 +18,6 @@ const sendEmail = async (to, subject, text = '', attachments = [], htmlContent =
         greetingTimeout: 15000,
     });
 
-    // 🔹 Обгортаємо в AllShipAI шаблон
     const html = `
     <html>
       <body style="background:#f4f6f8;padding:40px 0;font-family:Arial,Helvetica,sans-serif;">
